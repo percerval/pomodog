@@ -1,22 +1,18 @@
+from src.core.pomodoro_engine import PomodoroEngine
 from src.data.json_repository import JSONRepository
+from src.ui.tui_app import PomodoroTUI
 
 
 def main():
+    # Instancia as duas camadas
+    engine = PomodoroEngine(
+        focus_time=25 * 60, short_break_time=5 * 60, long_break_time=15 * 60
+    )
     repo = JSONRepository()
 
-    print("--- Testando JSONRepository ---")
-
-    # 1. Simula a conclusão de uma sessão de 25 minutos de foco
-    repo.save_completed_session(focus_minutes=25)
-    print("Sessão de 25 minutos registrada com sucesso!")
-
-    # 2. Lê as estatísticas do dia atual
-    today_stats = repo.get_today_stats()
-    print(f"Estatísticas de Hoje: {today_stats}")
-
-    # 3. Lê o relatório completo
-    all_stats = repo.get_stats()
-    print(f"Relatório Geral: {all_stats}")
+    # Inicializa e roda a TUI
+    app = PomodoroTUI(engine=engine, repository=repo)
+    app.run()
 
 
 if __name__ == "__main__":
