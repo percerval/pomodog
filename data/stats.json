@@ -1,9 +1,9 @@
 {
-    "total_focus_time_minutes": 25,
+    "total_focus_time_minutes": 100,
     "history": {
         "2026-08-30": {
-            "completed_sessions": 1,
-            "focus_minutes": 25
+            "completed_sessions": 4,
+            "focus_minutes": 100
         }
     }
 }

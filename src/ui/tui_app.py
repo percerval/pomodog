@@ -5,6 +5,15 @@ from textual.widgets import Button, Footer, Header, Static
 from src.core.pomodoro_engine import PomodoroEngine, TimerState
 from src.data.json_repository import JSONRepository
 
+_TITLE_3D = """
+██████╗  ██████╗ ███╗   ███╗ ██████╗ ██████╗  ██████╗ ██████╗  ██████╗     ██████╗  ██████╗  ██████╗ 
+██╔══██╗██╔═══██╗████╗ ████║██╔═══██╗██╔══██╗██╔═══██╗██╔══██╗██╔═══██╗    ██╔══██╗██╔═══██╗██╔════╝ 
+██████╔╝██║   ██║██╔████╔██║██║   ██║██║  ██║██║   ██║██████╔╝██║   ██║    ██║  ██║██║   ██║██║  ███╗
+██╔═══╝ ██║   ██║██║╚██╔╝██║██║   ██║██║  ██║██║   ██║██╔══██╗██║   ██║    ██║  ██║██║   ██║██║   ██║
+██║     ╚██████╔╝██║ ╚═╝ ██║╚██████╔╝██████╔╝╚██████╔╝██║  ██║╚██████╔╝    ██████╔╝╚██████╔╝╚██████╔╝
+╚═╝      ╚═════╝ ╚═╝     ╚═╝ ╚═════╝ ╚═════╝  ╚═════╝ ╚═╝  ╚═╝ ╚═════╝     ╚═════╝  ╚═════╝  ╚═════╝  
+"""                                                                     
+
 class PomodoroTUI(App):
     """
     Interface de Terminal (TUI) interativa para o Pomodoro Dog.
@@ -13,15 +22,24 @@ class PomodoroTUI(App):
     CSS = """
     Screen {
         align: center middle;
-        background: $surface;
+        background: #000000;
+    }
+
+    #title-display {
+        text-align: center;
+        color: #FFFFFF;
+        text-style: bold;
+        width: 110;
+        height: 7;
+        margin-bottom: 1;
     }
 
     #main-container {
-        width: 60;
-        height: 22;
-        border: heavy $accent;
+        width: 110;
+        height: 20;
+        border: heavy #00E5FF;
         padding: 1 2;
-        background: $panel;
+        background: #0D1117;
     }
 
     #state-label {
@@ -71,8 +89,9 @@ class PomodoroTUI(App):
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
+        yield Static(_TITLE_3D, id="title-display")
         with Container(id="main-container"):
-            yield Static(" POMODORO DOG ", id="state-label")
+            yield Static(" CURRENT STATUS: FOCUS ", id="state-label")
             yield Static(self.engine.formatted_time(), id="timer-display")
 
             with Vertical(id="stats-panel"):
@@ -101,14 +120,15 @@ class PomodoroTUI(App):
         Chamado a cada 1 segundo pelo timer do Textual.
         """
         if self.engine.is_running:
+            # 1. Guardamos o estado antes do tick
+            estado_anterior = self.engine.current_state
+            # 2. Executamos o tick
             fase_concluida = self.engine.tick()
-
-            # Se a fase de foco terminou, gravamos os dados!
-            if fase_concluida and self.engine.current_state != TimerState.FOCUS:
+            # 3. Se a fase terminou e era de FOCO, salva no JSON!
+            if fase_concluida and estado_anterior == TimerState.FOCUS:
                 self.repo.save_completed_session(self.engine.focus_time // 60)
-                self._update_stats_display()
-
-            self._update_ui()
+        # Atualizamos a interface visual a cada tick independente de estar rodando
+        self._update_ui()
 
     def _update_ui(self) -> None:
         """
@@ -121,6 +141,7 @@ class PomodoroTUI(App):
 
         estado_nome = self.engine.current_state.value.replace("_", " ")
         state_widget.update(f" CURRENT STATUS: {estado_nome} ")
+        self._update_stats_display()
 
     def _update_stats_display(self) -> None:
         """
@@ -142,6 +163,12 @@ class PomodoroTUI(App):
             self.query_one("#btn-toggle", Button).label = "Pausar (Espaço)"
 
     def action_skip_phase(self) -> None:
+        """
+        Pula a fase atual. Se a fase pulada for de foco, registra o progresso.
+        """
+        if self.engine.current_state == TimerState.FOCUS:
+            self.repo.save_completed_session(self.engine.focus_time // 60)
+
         self.engine._advance_to_next_state()
         self._update_ui()
 
