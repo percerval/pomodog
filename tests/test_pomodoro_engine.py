@@ -50,3 +50,15 @@ def test_skip_does_nothing_while_stopped():
 
     assert engine.current_state == TimerState.STOPPED
     assert engine.seconds_remaining == engine.focus_time
+
+
+def test_reset_clears_completed_cycles():
+    engine = PomodoroEngine(focus_time=1)
+    engine.start()
+    engine.tick()
+
+    engine.reset()
+
+    assert engine.current_state == TimerState.STOPPED
+    assert engine.completed_cycles == 0
+    assert engine.seconds_remaining == engine.focus_time

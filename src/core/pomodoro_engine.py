@@ -83,6 +83,7 @@ class PomodoroEngine:
         self._is_running = False
         self._current_state = TimerState.STOPPED
         self._seconds_remaining = self.focus_time
+        self._completed_cycles = 0
 
     def skip_phase(self):
         """Pula a fase atual sem contabilizar um foco concluído."""

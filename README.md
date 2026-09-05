@@ -10,7 +10,7 @@ O escopo atual é intencionalmente pequeno:
 - interface TUI;
 - ciclos de foco, pausa curta e pausa longa;
 - controles para iniciar, pausar, pular e resetar;
-- persistência local de sessões concluídas em JSON.
+- persistência local de sessões concluídas e focos parciais salvos em JSON.
 
 O roadmap prevê associar sessões a tarefas e gerar relatórios de foco em PDF e
 outros formatos. Essas funcionalidades ainda não estão implementadas.
@@ -47,6 +47,15 @@ Atalhos disponíveis:
 
 Uma fase pulada não é contabilizada como sessão concluída.
 
+Ao resetar um foco parcialmente consumido, a TUI oferece três opções:
+
+- `Save Partial`: registra o tempo como sessão interrompida e reseta o ciclo;
+- `Discard`: descarta o tempo parcial e reseta o ciclo;
+- `Cancel`: fecha o modal e restaura o estado anterior do timer.
+
+Reset restaura o estado inicial e também zera os ciclos concluídos. Em pausas,
+no estado inicial ou antes de consumir tempo de foco, o reset é imediato.
+
 ## Testes
 
 ```bash
@@ -66,7 +75,7 @@ main.py                     composição das dependências
 
 `main.py` cria o engine e o repository e os injeta na TUI. O Core não depende
 da interface nem da persistência. A UI coordena o timer e registra no repository
-somente as fases de foco efetivamente concluídas.
+fases concluídas e focos parciais que o usuário escolheu salvar.
 
 Essa organização é uma arquitetura em camadas simples, não uma implementação
 formal de MVC. Novas camadas devem ser introduzidas apenas quando tarefas,
@@ -78,13 +87,24 @@ As estatísticas ficam em `data/stats.json`:
 
 ```json
 {
-  "total_focus_time_minutes": 25,
+  "schema_version": 2,
+  "total_focus_seconds": 754,
   "history": {
     "2026-09-05": {
-      "completed_sessions": 1,
-      "focus_minutes": 25
+      "completed_sessions": 0,
+      "focus_seconds": 754
     }
-  }
+  },
+  "sessions": [
+    {
+      "id": "a1b2c3d4-...",
+      "started_at": "2026-09-05T14:00:00-03:00",
+      "ended_at": "2026-09-05T14:12:34-03:00",
+      "planned_seconds": 1500,
+      "actual_seconds": 754,
+      "status": "interrupted"
+    }
+  ]
 }
 ```
 
@@ -92,9 +112,16 @@ O arquivo é local e não é versionado. O caminho é definido em `main.py` a
 partir da raiz do projeto, portanto a aplicação pode ser iniciada de qualquer
 diretório.
 
-O schema atual guarda somente agregados. Antes de associar foco a tarefas ou
-emitir relatórios detalhados, será necessário registrar sessões individuais,
-com informações como início, fim, duração e identificador da tarefa.
+Segundos são a unidade canônica para evitar perda de precisão. Sessões
+`completed` e `interrupted` somam tempo de foco, mas somente `completed`
+incrementa a quantidade de sessões e o ciclo usado para calcular pausas longas.
+
+Arquivos no formato legado são migrados automaticamente. Os totais históricos
+são preservados, mas não podem ser convertidos em sessões individuais porque o
+formato antigo não registrava horários nem durações por sessão.
+
+As sessões são agrupadas pela data de término e as gravações usam substituição
+atômica do arquivo para reduzir o risco de corrupção por interrupções.
 
 ## Estrutura
 
@@ -117,8 +144,8 @@ pomodog/
 
 ## Roadmap
 
-1. Consolidar testes e regras do timer.
-2. Evoluir o JSON de agregados para registros individuais de sessão.
-3. Associar sessões de foco a tarefas.
-4. Criar consultas e resumos de produtividade.
+1. Consolidar precisão e recuperação do timer.
+2. Associar sessões de foco a tarefas.
+3. Criar consultas e resumos de produtividade.
+4. Exportar relatórios para Markdown e CSV.
 5. Exportar relatórios para PDF e outros documentos.

@@ -1,5 +1,9 @@
+from datetime import datetime, timedelta
+from typing import Literal
+
 from textual.app import App, ComposeResult
 from textual.containers import Container, Horizontal, Vertical
+from textual.screen import ModalScreen
 from textual.widgets import Button, Footer, Header, Static
 
 from src.core.pomodoro_engine import PomodoroEngine, TimerState
@@ -14,6 +18,92 @@ _TITLE_3D = """
 ╚═╝      ╚═════╝ ╚═╝     ╚═╝ ╚═════╝ ╚═════╝  ╚═════╝  ╚═════╝ 
 
 """
+
+ResetDecision = Literal["save", "discard"]
+
+
+class ResetConfirmationModal(ModalScreen[ResetDecision]):
+    """Solicita uma decisão para o foco parcial antes do reset."""
+
+    AUTO_FOCUS = "#btn-cancel-reset"
+    BINDINGS = [("escape", "cancel", "Cancel")]
+
+    CSS = """
+    ResetConfirmationModal {
+        align: center middle;
+    }
+
+    #reset-dialog {
+        width: 82;
+        height: 15;
+        border: heavy #00E5FF;
+        padding: 1 2;
+        background: #0D1117;
+    }
+
+    #reset-title {
+        text-align: center;
+        text-style: bold;
+        color: #FFFFFF;
+        margin-bottom: 1;
+    }
+
+    #reset-message {
+        text-align: center;
+        color: #FFFFFF;
+        margin-bottom: 1;
+    }
+
+    #reset-actions {
+        height: 3;
+        align: center middle;
+    }
+
+    #btn-save-reset {
+        background: #006D77;
+        color: #FFFFFF;
+    }
+
+    #btn-discard-reset {
+        background: #8F3A46;
+        color: #FFFFFF;
+    }
+
+    #btn-cancel-reset {
+        background: #5F3B8C;
+        color: #FFFFFF;
+    }
+    """
+
+    def __init__(self, elapsed_seconds: int):
+        super().__init__()
+        self.elapsed_seconds = elapsed_seconds
+
+    def compose(self) -> ComposeResult:
+        minutes, seconds = divmod(self.elapsed_seconds, 60)
+        with Container(id="reset-dialog"):
+            yield Static("Reset current cycle?", id="reset-title")
+            yield Static(
+                f"You focused for {minutes:02d}:{seconds:02d}. "
+                "Save this partial session before resetting?",
+                id="reset-message",
+            )
+            with Horizontal(id="reset-actions"):
+                yield Button("Save Partial", id="btn-save-reset")
+                yield Button("Discard", id="btn-discard-reset")
+                yield Button("Cancel", id="btn-cancel-reset")
+
+    def action_cancel(self) -> None:
+        self.dismiss()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        decisions: dict[str, ResetDecision | None] = {
+            "btn-save-reset": "save",
+            "btn-discard-reset": "discard",
+            "btn-cancel-reset": None,
+        }
+        self.dismiss(decisions[event.button.id])
+
 
 class PomodoroTUI(App):
     """
@@ -72,33 +162,34 @@ class PomodoroTUI(App):
     }
 
     #btn-toggle {
-        background: #5B21B6;
+        background: #006D77;
         color: #FFFFFF;
     }
 
     #btn-toggle:hover {
-        background: #6D28D9;
+        background: #007F8B;
     }
 
     #btn-skip {
-        background: #9A3412;
+        background: #5F3B8C;
         color: #FFFFFF;
     }
 
     #btn-skip:hover {
-        background: #C2410C;
+        background: #7049A5;
     }
 
     #btn-reset {
-        background: #991B1B;
+        background: #8F3A46;
         color: #FFFFFF;
     }
 
     #btn-reset:hover {
-        background: #B91C1C;
+        background: #A44755;
     }
 
     Button {
+        width: 20;
         margin: 0 2;
     }
     """
@@ -114,6 +205,10 @@ class PomodoroTUI(App):
         super().__init__()
         self.engine = engine
         self.repo = repository
+        self._focus_started_at: datetime | None = None
+        self._reset_was_running = False
+        self._pending_reset_elapsed_seconds = 0
+        self._pending_reset_ended_at: datetime | None = None
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -154,7 +249,18 @@ class PomodoroTUI(App):
             fase_concluida = self.engine.tick()
             # 3. Se a fase terminou e era de FOCO, salva no JSON!
             if fase_concluida and estado_anterior == TimerState.FOCUS:
-                self.repo.save_completed_session(self.engine.focus_time // 60)
+                ended_at = datetime.now().astimezone()
+                started_at = self._focus_started_at or ended_at - timedelta(
+                    seconds=self.engine.focus_time
+                )
+                self.repo.save_focus_session(
+                    started_at=started_at,
+                    ended_at=ended_at,
+                    planned_seconds=self.engine.focus_time,
+                    actual_seconds=self.engine.focus_time,
+                    status="completed",
+                )
+                self._focus_started_at = None
         # Atualizamos a interface visual a cada tick independente de estar rodando
         self._update_ui()
 
@@ -192,15 +298,68 @@ class PomodoroTUI(App):
             self.query_one("#btn-toggle", Button).label = "Start (Space)"
         else:
             self.engine.start()
+            if (
+                self.engine.current_state == TimerState.FOCUS
+                and self._focus_started_at is None
+            ):
+                self._focus_started_at = datetime.now().astimezone()
             self.query_one("#btn-toggle", Button).label = "Pause (Space)"
 
     def action_skip_phase(self) -> None:
         """Pula a fase atual sem registrar uma sessão concluída."""
+        skipped_focus = self.engine.current_state == TimerState.FOCUS
         self.engine.skip_phase()
+        if skipped_focus:
+            self._focus_started_at = None
         self._update_ui()
 
     def action_reset_timer(self) -> None:
+        elapsed_seconds = self.engine.focus_time - self.engine.seconds_remaining
+        if self.engine.current_state == TimerState.FOCUS and elapsed_seconds > 0:
+            self._reset_was_running = self.engine.is_running
+            self._pending_reset_elapsed_seconds = elapsed_seconds
+            self._pending_reset_ended_at = datetime.now().astimezone()
+            self.engine.pause()
+            self._update_ui()
+            self.push_screen(
+                ResetConfirmationModal(elapsed_seconds),
+                self._handle_reset_decision,
+            )
+            return
+
+        self._perform_reset()
+
+    def _handle_reset_decision(self, decision: ResetDecision | None) -> None:
+        if decision is None:
+            if self._reset_was_running:
+                self.engine.start()
+            self._reset_was_running = False
+            self._pending_reset_elapsed_seconds = 0
+            self._pending_reset_ended_at = None
+            self._update_ui()
+            return
+
+        if decision == "save":
+            ended_at = self._pending_reset_ended_at or datetime.now().astimezone()
+            started_at = self._focus_started_at or ended_at - timedelta(
+                seconds=self._pending_reset_elapsed_seconds
+            )
+            self.repo.save_focus_session(
+                started_at=started_at,
+                ended_at=ended_at,
+                planned_seconds=self.engine.focus_time,
+                actual_seconds=self._pending_reset_elapsed_seconds,
+                status="interrupted",
+            )
+
+        self._perform_reset()
+
+    def _perform_reset(self) -> None:
         self.engine.reset()
+        self._focus_started_at = None
+        self._reset_was_running = False
+        self._pending_reset_elapsed_seconds = 0
+        self._pending_reset_ended_at = None
         self._update_ui()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
