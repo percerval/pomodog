@@ -6,12 +6,13 @@ from src.core.pomodoro_engine import PomodoroEngine, TimerState
 from src.data.json_repository import JSONRepository
 
 _TITLE_3D = """
-██████╗  ██████╗ ███╗   ███╗ ██████╗ ██████╗  ██████╗  ██████╗
-██╔══██╗██╔═══██╗████╗ ████║██╔═══██╗██╔══██╗██╔═══██╗██╔════╝
+██████╗  ██████╗ ███╗   ███╗ ██████╗ ██████╗  ██████╗  ██████╗ 
+██╔══██╗██╔═══██╗████╗ ████║██╔═══██╗██╔══██╗██╔═══██╗██╔════╝ 
 ██████╔╝██║   ██║██╔████╔██║██║   ██║██║  ██║██║   ██║██║  ███╗
 ██╔═══╝ ██║   ██║██║╚██╔╝██║██║   ██║██║  ██║██║   ██║██║   ██║
 ██║     ╚██████╔╝██║ ╚═╝ ██║╚██████╔╝██████╔╝╚██████╔╝╚██████╔╝
-╚═╝      ╚═════╝ ╚═╝     ╚═╝ ╚═════╝ ╚═════╝  ╚═════╝  ╚═════╝
+╚═╝      ╚═════╝ ╚═╝     ╚═╝ ╚═════╝ ╚═════╝  ╚═════╝  ╚═════╝ 
+
 """
 
 class PomodoroTUI(App):
@@ -29,13 +30,13 @@ class PomodoroTUI(App):
         text-align: center;
         color: #FFFFFF;
         text-style: bold;
-        width: 110;
-        height: 7;
+        width: 90;
+        height: 8;
         margin-bottom: 1;
     }
 
     #main-container {
-        width: 110;
+        width: 90;
         height: 20;
         border: heavy #00E5FF;
         padding: 1 2;
@@ -70,16 +71,43 @@ class PomodoroTUI(App):
         align: center middle;
     }
 
+    #btn-toggle {
+        background: #5B21B6;
+        color: #FFFFFF;
+    }
+
+    #btn-toggle:hover {
+        background: #6D28D9;
+    }
+
+    #btn-skip {
+        background: #9A3412;
+        color: #FFFFFF;
+    }
+
+    #btn-skip:hover {
+        background: #C2410C;
+    }
+
+    #btn-reset {
+        background: #991B1B;
+        color: #FFFFFF;
+    }
+
+    #btn-reset:hover {
+        background: #B91C1C;
+    }
+
     Button {
-        margin: 0 1;
+        margin: 0 2;
     }
     """
 
     BINDINGS = [ 
-        ("space", "toggle_timer", "Iniciar/Pausar"),
-        ("s", "skip_phase", "Pular Fase"),
-        ("r", "reset_timer", "Resetar"),
-        ("q", "quit", "Sair"),
+        ("space", "toggle_timer", "Start/Pause"),
+        ("s", "skip_phase", "Skip Phase"),
+        ("r", "reset_timer", "Reset"),
+        ("q", "quit", "Quit"),
     ]
 
     def __init__(self, engine: PomodoroEngine, repository: JSONRepository):
@@ -102,9 +130,9 @@ class PomodoroTUI(App):
                 )
 
             with Horizontal(id="button-bar"):
-                yield Button("Iniciar (Espaço)", id="btn-toggle", variant="success")
-                yield Button("Pular (S)", id="btn-skip", variant="warning")
-                yield Button("Resetar (R)", id="btn-reset", variant="error")
+                yield Button("Start (Space)", id="btn-toggle")
+                yield Button("Skip (S)", id="btn-skip")
+                yield Button("Reset (R)", id="btn-reset")
 
         yield Footer()
 
@@ -136,11 +164,15 @@ class PomodoroTUI(App):
         """
         timer_widget = self.query_one("#timer-display", Static)
         state_widget = self.query_one("#state-label", Static)
+        toggle_button = self.query_one("#btn-toggle", Button)
 
         timer_widget.update(f"[bold size=2]{self.engine.formatted_time()}[/]")
 
         estado_nome = self.engine.current_state.value.replace("_", " ")
         state_widget.update(f" CURRENT STATUS: {estado_nome} ")
+        toggle_button.label = (
+            "Pause (Space)" if self.engine.is_running else "Start (Space)"
+        )
         self._update_stats_display()
 
     def _update_stats_display(self) -> None:
@@ -157,10 +189,10 @@ class PomodoroTUI(App):
     def action_toggle_timer(self) -> None:
         if self.engine.is_running:
             self.engine.pause()
-            self.query_one("#btn-toggle", Button).label = "Iniciar (Espaço)"
+            self.query_one("#btn-toggle", Button).label = "Start (Space)"
         else:
             self.engine.start()
-            self.query_one("#btn-toggle", Button).label = "Pausar (Espaço)"
+            self.query_one("#btn-toggle", Button).label = "Pause (Space)"
 
     def action_skip_phase(self) -> None:
         """Pula a fase atual sem registrar uma sessão concluída."""
