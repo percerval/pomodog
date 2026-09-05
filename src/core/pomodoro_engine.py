@@ -83,6 +83,13 @@ class PomodoroEngine:
         self._is_running = False
         self._current_state = TimerState.STOPPED
         self._seconds_remaining = self.focus_time
+
+    def skip_phase(self):
+        """Pula a fase atual sem contabilizar um foco concluído."""
+        if self._current_state == TimerState.STOPPED:
+            return
+
+        self._advance_to_next_state(count_completed_focus=False)
     
     def tick(self) -> bool:
         """
@@ -107,17 +114,21 @@ class PomodoroEngine:
     #-------------------------------------------------------------
     # Métodos Privados / Auxiliares (Regras internas de transição)
     #-------------------------------------------------------------
-    def _advance_to_next_state(self):
+    def _advance_to_next_state(self, count_completed_focus: bool = True):
         """
         Gerenciar a transição automatica entre FOCUS -> PAUSE -> FOCUS.
         """
         self._is_running = False # Pausa ao trocar de fase
 
         if self._current_state == TimerState.FOCUS:
-            self._completed_cycles += 1
+            if count_completed_focus:
+                self._completed_cycles += 1
 
             # Decidir se vai para Pausa longa ou Pausa curta
-            if self._completed_cycles % self.cycles_before_long_break == 0:
+            if (
+                count_completed_focus
+                and self._completed_cycles % self.cycles_before_long_break == 0
+            ):
                 self._current_state = TimerState.LONG_BREAK
                 self._seconds_remaining = self.long_break_time
             else:

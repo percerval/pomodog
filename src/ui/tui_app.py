@@ -6,13 +6,13 @@ from src.core.pomodoro_engine import PomodoroEngine, TimerState
 from src.data.json_repository import JSONRepository
 
 _TITLE_3D = """
-██████╗  ██████╗ ███╗   ███╗ ██████╗ ██████╗  ██████╗ ██████╗  ██████╗     ██████╗  ██████╗  ██████╗ 
-██╔══██╗██╔═══██╗████╗ ████║██╔═══██╗██╔══██╗██╔═══██╗██╔══██╗██╔═══██╗    ██╔══██╗██╔═══██╗██╔════╝ 
-██████╔╝██║   ██║██╔████╔██║██║   ██║██║  ██║██║   ██║██████╔╝██║   ██║    ██║  ██║██║   ██║██║  ███╗
-██╔═══╝ ██║   ██║██║╚██╔╝██║██║   ██║██║  ██║██║   ██║██╔══██╗██║   ██║    ██║  ██║██║   ██║██║   ██║
-██║     ╚██████╔╝██║ ╚═╝ ██║╚██████╔╝██████╔╝╚██████╔╝██║  ██║╚██████╔╝    ██████╔╝╚██████╔╝╚██████╔╝
-╚═╝      ╚═════╝ ╚═╝     ╚═╝ ╚═════╝ ╚═════╝  ╚═════╝ ╚═╝  ╚═╝ ╚═════╝     ╚═════╝  ╚═════╝  ╚═════╝  
-"""                                                                     
+██████╗  ██████╗ ███╗   ███╗ ██████╗ ██████╗  ██████╗  ██████╗
+██╔══██╗██╔═══██╗████╗ ████║██╔═══██╗██╔══██╗██╔═══██╗██╔════╝
+██████╔╝██║   ██║██╔████╔██║██║   ██║██║  ██║██║   ██║██║  ███╗
+██╔═══╝ ██║   ██║██║╚██╔╝██║██║   ██║██║  ██║██║   ██║██║   ██║
+██║     ╚██████╔╝██║ ╚═╝ ██║╚██████╔╝██████╔╝╚██████╔╝╚██████╔╝
+╚═╝      ╚═════╝ ╚═╝     ╚═╝ ╚═════╝ ╚═════╝  ╚═════╝  ╚═════╝
+"""
 
 class PomodoroTUI(App):
     """
@@ -163,13 +163,8 @@ class PomodoroTUI(App):
             self.query_one("#btn-toggle", Button).label = "Pausar (Espaço)"
 
     def action_skip_phase(self) -> None:
-        """
-        Pula a fase atual. Se a fase pulada for de foco, registra o progresso.
-        """
-        if self.engine.current_state == TimerState.FOCUS:
-            self.repo.save_completed_session(self.engine.focus_time // 60)
-
-        self.engine._advance_to_next_state()
+        """Pula a fase atual sem registrar uma sessão concluída."""
+        self.engine.skip_phase()
         self._update_ui()
 
     def action_reset_timer(self) -> None:
