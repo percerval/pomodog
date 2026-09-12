@@ -10,7 +10,9 @@ O escopo atual é intencionalmente pequeno:
 - interface TUI;
 - ciclos de foco, pausa curta e pausa longa;
 - controles para iniciar, pausar, pular e resetar;
-- persistência local de sessões concluídas e focos parciais salvos em JSON.
+- persistência local de sessões concluídas e focos parciais salvos em JSON;
+- notificação sonora ao concluir foco ou pausa;
+- notificação desktop com ícone ao concluir foco ou pausa.
 
 O roadmap prevê associar sessões a tarefas e gerar relatórios de foco em PDF e
 outros formatos. Essas funcionalidades ainda não estão implementadas.
@@ -18,7 +20,8 @@ outros formatos. Essas funcionalidades ainda não estão implementadas.
 ## Requisitos
 
 - Python 3.13;
-- [uv](https://docs.astral.sh/uv/).
+- [uv](https://docs.astral.sh/uv/);
+- `notify-send` (`libnotify`) para popups desktop — opcional; sem ele, apenas o som funciona.
 
 As versões exatas das dependências são registradas em `uv.lock`.
 
@@ -56,6 +59,7 @@ Atalhos disponíveis:
 | Espaço | Iniciar ou pausar |
 | `s` | Pular a fase atual |
 | `r` | Resetar o timer |
+| `m` | Ativar ou silenciar o som |
 | `q` | Sair |
 
 Uma fase pulada não é contabilizada como sessão concluída.
@@ -69,6 +73,30 @@ Ao resetar um foco parcialmente consumido, a TUI oferece três opções:
 Reset restaura o estado inicial e também zera os ciclos concluídos. Em pausas,
 no estado inicial ou antes de consumir tempo de foco, o reset é imediato.
 
+## Notificação sonora
+
+O mesmo sino curto é reproduzido quando um foco ou uma pausa termina
+naturalmente. Skip, Reset, Save Partial, Discard e Cancel permanecem silenciosos.
+
+O áudio fica em `assets/sounds/session-complete.wav`. A reprodução ocorre fora
+do event loop e tenta, nesta ordem, `pw-play`, `paplay` e `aplay`. Se nenhum
+backend conseguir reproduzir o arquivo, a aplicação usa o terminal bell do
+Textual. Não há dependência Python adicional para áudio.
+
+O atalho `m` alterna mute durante a execução. A preferência ainda não é
+persistida entre execuções.
+
+## Notificação desktop
+
+Um popup do sistema é exibido quando um foco ou uma pausa termina
+naturalmente, com mensagens distintas para cada caso. Skip, Reset,
+Save Partial, Discard e Cancel permanecem silenciosos.
+
+O envio usa `notify-send` em thread dedicada, sem bloquear o event loop,
+com o ícone `assets/icons/pomodog.png`. O mute (`m`) vale apenas para o
+áudio — os popups continuam aparecendo. Se o `notify-send` estiver ausente
+ou o serviço de notificações falhar, o popup é ignorado silenciosamente.
+
 ## Testes
 
 ```bash
@@ -77,18 +105,21 @@ uv run pytest
 
 ## Arquitetura
 
-O projeto é um monólito local dividido em três responsabilidades:
+O projeto é um monólito local dividido em quatro responsabilidades:
 
 ```text
 main.py                     composição das dependências
   |-- src/core/             estado e regras do timer
   |-- src/data/             persistência local em JSON
+  |-- src/notifications/    áudio e popups do sistema
   `-- src/ui/               interface Textual e orquestração
 ```
 
-`main.py` cria o engine e o repository e os injeta na TUI. O Core não depende
-da interface nem da persistência. A UI coordena o timer e registra no repository
-fases concluídas e focos parciais que o usuário escolheu salvar.
+`main.py` cria o engine, o repository, o notifier de áudio e o notifier
+desktop e os injeta na TUI. O Core não depende da interface, da persistência
+nem das notificações. A UI coordena o timer, registra no repository fases
+concluídas e focos parciais que o usuário escolheu salvar e solicita som e
+popup aos notifiers.
 
 Essa organização é uma arquitetura em camadas simples, não uma implementação
 formal de MVC. Novas camadas devem ser introduzidas apenas quando tarefas,
@@ -145,6 +176,11 @@ pomodog/
 |-- main.py
 |-- pyproject.toml
 |-- uv.lock
+|-- assets/
+|   |-- icons/
+|   |   `-- pomodog.png
+|   `-- sounds/
+|       `-- session-complete.wav
 |-- data/
 |   `-- stats.json
 |-- src/
@@ -152,6 +188,9 @@ pomodog/
 |   |   `-- pomodoro_engine.py
 |   |-- data/
 |   |   `-- json_repository.py
+|   |-- notifications/
+|   |   |-- desktop_notifier.py
+|   |   `-- sound_notifier.py
 |   `-- ui/
 |       `-- tui_app.py
 `-- tests/

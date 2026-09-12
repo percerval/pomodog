@@ -10,6 +10,8 @@ from textual.widgets import Button, Footer, Header, Static
 
 from src.core.pomodoro_engine import PomodoroEngine, TimerState
 from src.data.json_repository import JSONRepository
+from src.notifications.desktop_notifier import DesktopEvent, DesktopNotifierProtocol
+from src.notifications.sound_notifier import SessionNotifier
 
 _TITLE_3D = """
 ██████╗  ██████╗ ███╗   ███╗ ██████╗ ██████╗  ██████╗  ██████╗ 
@@ -204,6 +206,7 @@ class PomodoroTUI(App):
         ("space", "toggle_timer", "Start/Pause"),
         ("s", "skip_phase", "Skip Phase"),
         ("r", "reset_timer", "Reset"),
+        ("m", "toggle_sound", "Mute Sound"),
         ("q", "quit", "Quit"),
     ]
 
@@ -212,10 +215,16 @@ class PomodoroTUI(App):
         engine: PomodoroEngine,
         repository: JSONRepository,
         now: Callable[[], datetime] = _current_time,
+        *,
+        notifier: SessionNotifier | None = None,
+        desktop_notifier: DesktopNotifierProtocol | None = None,
     ):
         super().__init__()
         self.engine = engine
         self.repo = repository
+        self._notifier = notifier
+        self._desktop_notifier = desktop_notifier
+        self._sound_enabled = True
         self._now = now
         self._focus_started_at: datetime | None = None
         self._focus_started_clock: float | None = None
@@ -258,41 +267,74 @@ class PomodoroTUI(App):
         if self.engine.is_running:
             previous_state = self.engine.current_state
             phase_completed = self.engine.tick()
-            self._record_completed_focus(previous_state, phase_completed)
+            self._handle_phase_completion(previous_state, phase_completed)
         # Atualizamos a interface visual a cada tick independente de estar rodando
         self._update_ui()
 
-    def _record_completed_focus(
+    def _handle_phase_completion(
         self, previous_state: TimerState, phase_completed: bool
     ) -> None:
-        if not phase_completed or previous_state != TimerState.FOCUS:
+        if not phase_completed:
             return
 
-        if (
-            self._focus_started_at is not None
-            and self._focus_started_clock is not None
+        if previous_state == TimerState.FOCUS:
+            if (
+                self._focus_started_at is not None
+                and self._focus_started_clock is not None
+            ):
+                elapsed_time = (
+                    self.engine.elapsed_clock_time()
+                    - self._focus_started_clock
+                    - self.engine.completion_overdue_seconds
+                )
+                started_at = self._focus_started_at
+                ended_at = started_at + timedelta(seconds=max(0.0, elapsed_time))
+            else:
+                ended_at = self._now() - timedelta(
+                    seconds=self.engine.completion_overdue_seconds
+                )
+                started_at = ended_at - timedelta(seconds=self.engine.focus_time)
+            self.repo.save_focus_session(
+                started_at=started_at,
+                ended_at=ended_at,
+                planned_seconds=self.engine.focus_time,
+                actual_seconds=self.engine.focus_time,
+                status="completed",
+            )
+            self._focus_started_at = None
+            self._focus_started_clock = None
+
+        self._play_completion_sound()
+        self._show_completion_notification(previous_state)
+
+    def _play_completion_sound(self) -> None:
+        if not self._sound_enabled:
+            return
+        if self._notifier is None or not self._notifier.notify(
+            on_failure=self._ring_terminal_bell_from_thread
         ):
-            elapsed_time = (
-                self.engine.elapsed_clock_time()
-                - self._focus_started_clock
-                - self.engine.completion_overdue_seconds
-            )
-            started_at = self._focus_started_at
-            ended_at = started_at + timedelta(seconds=max(0.0, elapsed_time))
-        else:
-            ended_at = self._now() - timedelta(
-                seconds=self.engine.completion_overdue_seconds
-            )
-            started_at = ended_at - timedelta(seconds=self.engine.focus_time)
-        self.repo.save_focus_session(
-            started_at=started_at,
-            ended_at=ended_at,
-            planned_seconds=self.engine.focus_time,
-            actual_seconds=self.engine.focus_time,
-            status="completed",
+            self.bell()
+
+    def _ring_terminal_bell_from_thread(self) -> None:
+        try:
+            self.call_from_thread(self.bell)
+        except RuntimeError:
+            # A reprodução pode falhar depois que a TUI já foi encerrada.
+            pass
+
+    def _show_completion_notification(self, previous_state: TimerState) -> None:
+        if self._desktop_notifier is None:
+            return
+        event: DesktopEvent = (
+            "focus-complete"
+            if previous_state == TimerState.FOCUS
+            else "break-complete"
         )
-        self._focus_started_at = None
-        self._focus_started_clock = None
+        try:
+            self._desktop_notifier.notify(event)
+        except Exception:
+            # Notificação desktop nunca pode quebrar o timer.
+            pass
 
     def _update_ui(self) -> None:
         """
@@ -326,7 +368,7 @@ class PomodoroTUI(App):
         if self.engine.is_running:
             previous_state = self.engine.current_state
             phase_completed = self.engine.pause()
-            self._record_completed_focus(previous_state, phase_completed)
+            self._handle_phase_completion(previous_state, phase_completed)
         else:
             self.engine.start()
             if self.engine.current_state == TimerState.FOCUS:
@@ -340,7 +382,7 @@ class PomodoroTUI(App):
         if self.engine.is_running:
             previous_state = self.engine.current_state
             phase_completed = self.engine.tick()
-            self._record_completed_focus(previous_state, phase_completed)
+            self._handle_phase_completion(previous_state, phase_completed)
             if phase_completed:
                 self._update_ui()
                 return
@@ -357,7 +399,7 @@ class PomodoroTUI(App):
         if was_running:
             previous_state = self.engine.current_state
             phase_completed = self.engine.pause()
-            self._record_completed_focus(previous_state, phase_completed)
+            self._handle_phase_completion(previous_state, phase_completed)
 
         elapsed_time = self.engine.focus_elapsed_time
         elapsed_seconds = elapsed_time
@@ -419,6 +461,11 @@ class PomodoroTUI(App):
         self._pending_reset_elapsed_seconds = 0.0
         self._pending_reset_ended_at = None
         self._update_ui()
+
+    def action_toggle_sound(self) -> None:
+        self._sound_enabled = not self._sound_enabled
+        status = "enabled" if self._sound_enabled else "muted"
+        self.notify(f"Sound {status}")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         """Lida com cliques de mouse nos botões."""

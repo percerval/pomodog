@@ -8,6 +8,28 @@ from src.data.json_repository import JSONRepository
 from src.ui.tui_app import PomodoroTUI, ResetConfirmationModal
 
 
+class FakeNotifier:
+    def __init__(self, succeeds=True):
+        self.succeeds = succeeds
+        self.notifications = 0
+
+    def notify(self, on_failure=None):
+        self.notifications += 1
+        return self.succeeds
+
+
+class FakeDesktopNotifier:
+    def __init__(self, raises=False):
+        self.raises = raises
+        self.events = []
+
+    def notify(self, event):
+        if self.raises:
+            raise RuntimeError("desktop indisponível")
+        self.events.append(event)
+        return True
+
+
 def run_scenario(scenario):
     asyncio.run(scenario())
 
@@ -16,7 +38,13 @@ def test_reset_can_save_partial_focus(tmp_path, fake_clock):
     async def scenario():
         repository = JSONRepository(str(tmp_path / "stats.json"))
         engine = PomodoroEngine(focus_time=10, clock=fake_clock)
-        app = PomodoroTUI(engine, repository, now=fake_clock.now)
+        notifier = FakeNotifier()
+        app = PomodoroTUI(
+            engine,
+            repository,
+            notifier=notifier,
+            now=fake_clock.now,
+        )
 
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.press("space")
@@ -39,8 +67,127 @@ def test_reset_can_save_partial_focus(tmp_path, fake_clock):
             assert session["ended_at"] == reset_ended_at.isoformat()
             assert engine.current_state == TimerState.STOPPED
             assert engine.completed_cycles == 0
+            assert notifier.notifications == 0
 
     run_scenario(scenario)
+
+
+def test_focus_and_break_completion_use_same_notifier(tmp_path, fake_clock):
+    async def scenario():
+        repository = JSONRepository(str(tmp_path / "stats.json"))
+        engine = PomodoroEngine(
+            focus_time=1,
+            short_break_time=1,
+            clock=fake_clock,
+        )
+        notifier = FakeNotifier()
+        app = PomodoroTUI(
+            engine,
+            repository,
+            notifier=notifier,
+            now=fake_clock.now,
+        )
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.press("space")
+            fake_clock.advance(1)
+            app._on_tick()
+            assert notifier.notifications == 1
+
+            await pilot.press("space")
+            fake_clock.advance(1)
+            app._on_tick()
+            assert notifier.notifications == 2
+
+    run_scenario(scenario)
+
+
+def test_skip_and_reset_do_not_play_sound(tmp_path, fake_clock):
+    async def scenario():
+        repository = JSONRepository(str(tmp_path / "stats.json"))
+        engine = PomodoroEngine(focus_time=10, clock=fake_clock)
+        notifier = FakeNotifier()
+        app = PomodoroTUI(
+            engine,
+            repository,
+            notifier=notifier,
+            now=fake_clock.now,
+        )
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.press("space")
+            fake_clock.advance(1)
+            await pilot.press("s")
+            await pilot.press("r")
+
+            assert notifier.notifications == 0
+
+    run_scenario(scenario)
+
+
+def test_mute_suppresses_sound_until_enabled(tmp_path, fake_clock):
+    async def scenario():
+        repository = JSONRepository(str(tmp_path / "stats.json"))
+        engine = PomodoroEngine(
+            focus_time=1,
+            short_break_time=1,
+            clock=fake_clock,
+        )
+        notifier = FakeNotifier()
+        app = PomodoroTUI(
+            engine,
+            repository,
+            notifier=notifier,
+            now=fake_clock.now,
+        )
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.press("m")
+            await pilot.press("space")
+            fake_clock.advance(1)
+            app._on_tick()
+            assert notifier.notifications == 0
+
+            await pilot.press("m")
+            await pilot.press("space")
+            fake_clock.advance(1)
+            app._on_tick()
+            assert notifier.notifications == 1
+
+    run_scenario(scenario)
+
+
+def test_unavailable_notifier_uses_terminal_bell(tmp_path, fake_clock, monkeypatch):
+    async def scenario():
+        repository = JSONRepository(str(tmp_path / "stats.json"))
+        engine = PomodoroEngine(focus_time=1, clock=fake_clock)
+        notifier = FakeNotifier(succeeds=False)
+        app = PomodoroTUI(
+            engine,
+            repository,
+            notifier=notifier,
+            now=fake_clock.now,
+        )
+        bell_calls = []
+        monkeypatch.setattr(app, "bell", lambda: bell_calls.append(True))
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.press("space")
+            fake_clock.advance(1)
+            app._on_tick()
+
+            assert notifier.notifications == 1
+            assert bell_calls == [True]
+
+    run_scenario(scenario)
+
+
+def test_late_sound_failure_after_app_exit_is_ignored(tmp_path, fake_clock):
+    repository = JSONRepository(str(tmp_path / "stats.json"))
+    engine = PomodoroEngine(clock=fake_clock)
+    app = PomodoroTUI(engine, repository, now=fake_clock.now)
+
+    app._ring_terminal_bell_from_thread()
 
 
 def test_completed_focus_is_saved_as_completed_session(tmp_path, fake_clock):
@@ -84,7 +231,13 @@ def test_pause_at_deadline_saves_completed_focus_once(tmp_path, fake_clock):
     async def scenario():
         repository = JSONRepository(str(tmp_path / "stats.json"))
         engine = PomodoroEngine(focus_time=1, clock=fake_clock)
-        app = PomodoroTUI(engine, repository, now=fake_clock.now)
+        notifier = FakeNotifier()
+        app = PomodoroTUI(
+            engine,
+            repository,
+            notifier=notifier,
+            now=fake_clock.now,
+        )
 
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.press("space")
@@ -96,6 +249,7 @@ def test_pause_at_deadline_saves_completed_focus_once(tmp_path, fake_clock):
             assert len(sessions) == 1
             assert sessions[0]["status"] == "completed"
             assert engine.current_state == TimerState.SHORT_BREAK
+            assert notifier.notifications == 1
 
     run_scenario(scenario)
 
@@ -125,7 +279,13 @@ def test_skip_at_deadline_completes_focus_without_skipping_break(tmp_path, fake_
     async def scenario():
         repository = JSONRepository(str(tmp_path / "stats.json"))
         engine = PomodoroEngine(focus_time=1, clock=fake_clock)
-        app = PomodoroTUI(engine, repository, now=fake_clock.now)
+        notifier = FakeNotifier()
+        app = PomodoroTUI(
+            engine,
+            repository,
+            notifier=notifier,
+            now=fake_clock.now,
+        )
 
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.press("space")
@@ -134,6 +294,31 @@ def test_skip_at_deadline_completes_focus_without_skipping_break(tmp_path, fake_
 
             assert engine.current_state == TimerState.SHORT_BREAK
             assert len(repository.get_stats()["sessions"]) == 1
+            assert notifier.notifications == 1
+
+    run_scenario(scenario)
+
+
+def test_reset_at_deadline_completes_focus_and_notifies_once(tmp_path, fake_clock):
+    async def scenario():
+        repository = JSONRepository(str(tmp_path / "stats.json"))
+        engine = PomodoroEngine(focus_time=1, clock=fake_clock)
+        notifier = FakeNotifier()
+        app = PomodoroTUI(
+            engine,
+            repository,
+            notifier=notifier,
+            now=fake_clock.now,
+        )
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.press("space")
+            fake_clock.advance(1)
+            await pilot.press("r")
+
+            assert engine.current_state == TimerState.STOPPED
+            assert len(repository.get_stats()["sessions"]) == 1
+            assert notifier.notifications == 1
 
     run_scenario(scenario)
 
@@ -239,5 +424,107 @@ def test_cancel_reset_keeps_paused_timer_paused(tmp_path, fake_clock):
             assert engine.is_running is False
             assert repository.get_stats()["sessions"] == []
             assert str(app.query_one("#btn-toggle", Button).label) == "Start (Space)"
+
+    run_scenario(scenario)
+
+
+def test_desktop_notification_distinguishes_focus_and_break(tmp_path, fake_clock):
+    async def scenario():
+        repository = JSONRepository(str(tmp_path / "stats.json"))
+        engine = PomodoroEngine(
+            focus_time=1,
+            short_break_time=1,
+            clock=fake_clock,
+        )
+        desktop = FakeDesktopNotifier()
+        app = PomodoroTUI(
+            engine,
+            repository,
+            desktop_notifier=desktop,
+            now=fake_clock.now,
+        )
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.press("space")
+            fake_clock.advance(1)
+            app._on_tick()
+            assert desktop.events == ["focus-complete"]
+
+            await pilot.press("space")
+            fake_clock.advance(1)
+            app._on_tick()
+            assert desktop.events == ["focus-complete", "break-complete"]
+
+    run_scenario(scenario)
+
+
+def test_desktop_notification_is_silent_on_skip_and_reset(tmp_path, fake_clock):
+    async def scenario():
+        repository = JSONRepository(str(tmp_path / "stats.json"))
+        engine = PomodoroEngine(focus_time=10, clock=fake_clock)
+        desktop = FakeDesktopNotifier()
+        app = PomodoroTUI(
+            engine,
+            repository,
+            desktop_notifier=desktop,
+            now=fake_clock.now,
+        )
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.press("space")
+            fake_clock.advance(1)
+            await pilot.press("s")
+            await pilot.press("r")
+
+            assert desktop.events == []
+
+    run_scenario(scenario)
+
+
+def test_mute_does_not_suppress_desktop_notification(tmp_path, fake_clock):
+    async def scenario():
+        repository = JSONRepository(str(tmp_path / "stats.json"))
+        engine = PomodoroEngine(focus_time=1, clock=fake_clock)
+        notifier = FakeNotifier()
+        desktop = FakeDesktopNotifier()
+        app = PomodoroTUI(
+            engine,
+            repository,
+            notifier=notifier,
+            desktop_notifier=desktop,
+            now=fake_clock.now,
+        )
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.press("m")
+            await pilot.press("space")
+            fake_clock.advance(1)
+            app._on_tick()
+
+            assert notifier.notifications == 0
+            assert desktop.events == ["focus-complete"]
+
+    run_scenario(scenario)
+
+
+def test_desktop_failure_does_not_break_completion(tmp_path, fake_clock):
+    async def scenario():
+        repository = JSONRepository(str(tmp_path / "stats.json"))
+        engine = PomodoroEngine(focus_time=1, clock=fake_clock)
+        desktop = FakeDesktopNotifier(raises=True)
+        app = PomodoroTUI(
+            engine,
+            repository,
+            desktop_notifier=desktop,
+            now=fake_clock.now,
+        )
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.press("space")
+            fake_clock.advance(1)
+            app._on_tick()
+
+            assert engine.current_state == TimerState.SHORT_BREAK
+            assert len(repository.get_stats()["sessions"]) == 1
 
     run_scenario(scenario)
