@@ -101,7 +101,7 @@ class JSONRepository:
         started_at: datetime,
         ended_at: datetime,
         planned_seconds: int,
-        actual_seconds: int,
+        actual_seconds: float,
         status: SessionStatus,
     ) -> dict:
         """Registra uma sessão de foco e atualiza os agregados diários."""
@@ -114,19 +114,24 @@ class JSONRepository:
         if ended_at < started_at:
             raise ValueError("Session end cannot precede its start")
 
+        actual_seconds = round(actual_seconds, 6)
         data = self._read_json()
         session = {
             "id": str(uuid4()),
-            "started_at": started_at.isoformat(timespec="seconds"),
-            "ended_at": ended_at.isoformat(timespec="seconds"),
+            "started_at": started_at.isoformat(),
+            "ended_at": ended_at.isoformat(),
             "planned_seconds": planned_seconds,
             "actual_seconds": actual_seconds,
             "status": status,
         }
         data["sessions"].append(session)
-        data["total_focus_seconds"] += actual_seconds
+        data["total_focus_seconds"] = round(
+            data["total_focus_seconds"] + actual_seconds, 6
+        )
 
-        session_day = ended_at.date().isoformat()
+        session_day = (
+            ended_at.astimezone().date() if ended_at.tzinfo else ended_at.date()
+        ).isoformat()
         if session_day not in data["history"]:
             data["history"][session_day] = {
                 "completed_sessions": 0,
@@ -135,7 +140,9 @@ class JSONRepository:
 
         if status == "completed":
             data["history"][session_day]["completed_sessions"] += 1
-        data["history"][session_day]["focus_seconds"] += actual_seconds
+        data["history"][session_day]["focus_seconds"] = round(
+            data["history"][session_day]["focus_seconds"] + actual_seconds, 6
+        )
 
         self._write_json(data)
         return session
@@ -156,5 +163,5 @@ class JSONRepository:
         return {
             "completed_sessions": stats["completed_sessions"],
             "focus_seconds": stats["focus_seconds"],
-            "focus_minutes": stats["focus_seconds"] // 60,
+            "focus_minutes": int(stats["focus_seconds"] // 60),
         }

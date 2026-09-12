@@ -1,4 +1,6 @@
-from datetime import datetime, timedelta
+import math
+from collections.abc import Callable
+from datetime import datetime, timedelta, timezone
 from typing import Literal
 
 from textual.app import App, ComposeResult
@@ -20,6 +22,10 @@ _TITLE_3D = """
 """
 
 ResetDecision = Literal["save", "discard"]
+
+
+def _current_time() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 class ResetConfirmationModal(ModalScreen[ResetDecision]):
@@ -75,12 +81,12 @@ class ResetConfirmationModal(ModalScreen[ResetDecision]):
     }
     """
 
-    def __init__(self, elapsed_seconds: int):
+    def __init__(self, elapsed_seconds: float):
         super().__init__()
         self.elapsed_seconds = elapsed_seconds
 
     def compose(self) -> ComposeResult:
-        minutes, seconds = divmod(self.elapsed_seconds, 60)
+        minutes, seconds = divmod(max(1, math.ceil(self.elapsed_seconds)), 60)
         with Container(id="reset-dialog"):
             yield Static("Reset current cycle?", id="reset-title")
             yield Static(
@@ -201,13 +207,20 @@ class PomodoroTUI(App):
         ("q", "quit", "Quit"),
     ]
 
-    def __init__(self, engine: PomodoroEngine, repository: JSONRepository):
+    def __init__(
+        self,
+        engine: PomodoroEngine,
+        repository: JSONRepository,
+        now: Callable[[], datetime] = _current_time,
+    ):
         super().__init__()
         self.engine = engine
         self.repo = repository
+        self._now = now
         self._focus_started_at: datetime | None = None
+        self._focus_started_clock: float | None = None
         self._reset_was_running = False
-        self._pending_reset_elapsed_seconds = 0
+        self._pending_reset_elapsed_seconds = 0.0
         self._pending_reset_ended_at: datetime | None = None
 
     def compose(self) -> ComposeResult:
@@ -243,26 +256,43 @@ class PomodoroTUI(App):
         Chamado a cada 1 segundo pelo timer do Textual.
         """
         if self.engine.is_running:
-            # 1. Guardamos o estado antes do tick
-            estado_anterior = self.engine.current_state
-            # 2. Executamos o tick
-            fase_concluida = self.engine.tick()
-            # 3. Se a fase terminou e era de FOCO, salva no JSON!
-            if fase_concluida and estado_anterior == TimerState.FOCUS:
-                ended_at = datetime.now().astimezone()
-                started_at = self._focus_started_at or ended_at - timedelta(
-                    seconds=self.engine.focus_time
-                )
-                self.repo.save_focus_session(
-                    started_at=started_at,
-                    ended_at=ended_at,
-                    planned_seconds=self.engine.focus_time,
-                    actual_seconds=self.engine.focus_time,
-                    status="completed",
-                )
-                self._focus_started_at = None
+            previous_state = self.engine.current_state
+            phase_completed = self.engine.tick()
+            self._record_completed_focus(previous_state, phase_completed)
         # Atualizamos a interface visual a cada tick independente de estar rodando
         self._update_ui()
+
+    def _record_completed_focus(
+        self, previous_state: TimerState, phase_completed: bool
+    ) -> None:
+        if not phase_completed or previous_state != TimerState.FOCUS:
+            return
+
+        if (
+            self._focus_started_at is not None
+            and self._focus_started_clock is not None
+        ):
+            elapsed_time = (
+                self.engine.elapsed_clock_time()
+                - self._focus_started_clock
+                - self.engine.completion_overdue_seconds
+            )
+            started_at = self._focus_started_at
+            ended_at = started_at + timedelta(seconds=max(0.0, elapsed_time))
+        else:
+            ended_at = self._now() - timedelta(
+                seconds=self.engine.completion_overdue_seconds
+            )
+            started_at = ended_at - timedelta(seconds=self.engine.focus_time)
+        self.repo.save_focus_session(
+            started_at=started_at,
+            ended_at=ended_at,
+            planned_seconds=self.engine.focus_time,
+            actual_seconds=self.engine.focus_time,
+            status="completed",
+        )
+        self._focus_started_at = None
+        self._focus_started_clock = None
 
     def _update_ui(self) -> None:
         """
@@ -294,32 +324,59 @@ class PomodoroTUI(App):
     # --- Ações de Teclado e Botões ---
     def action_toggle_timer(self) -> None:
         if self.engine.is_running:
-            self.engine.pause()
-            self.query_one("#btn-toggle", Button).label = "Start (Space)"
+            previous_state = self.engine.current_state
+            phase_completed = self.engine.pause()
+            self._record_completed_focus(previous_state, phase_completed)
         else:
             self.engine.start()
-            if (
-                self.engine.current_state == TimerState.FOCUS
-                and self._focus_started_at is None
-            ):
-                self._focus_started_at = datetime.now().astimezone()
-            self.query_one("#btn-toggle", Button).label = "Pause (Space)"
+            if self.engine.current_state == TimerState.FOCUS:
+                if self._focus_started_at is None:
+                    self._focus_started_at = self._now()
+                    self._focus_started_clock = self.engine.elapsed_clock_time()
+        self._update_ui()
 
     def action_skip_phase(self) -> None:
         """Pula a fase atual sem registrar uma sessão concluída."""
+        if self.engine.is_running:
+            previous_state = self.engine.current_state
+            phase_completed = self.engine.tick()
+            self._record_completed_focus(previous_state, phase_completed)
+            if phase_completed:
+                self._update_ui()
+                return
+
         skipped_focus = self.engine.current_state == TimerState.FOCUS
         self.engine.skip_phase()
         if skipped_focus:
             self._focus_started_at = None
+            self._focus_started_clock = None
         self._update_ui()
 
     def action_reset_timer(self) -> None:
-        elapsed_seconds = self.engine.focus_time - self.engine.seconds_remaining
-        if self.engine.current_state == TimerState.FOCUS and elapsed_seconds > 0:
-            self._reset_was_running = self.engine.is_running
+        was_running = self.engine.is_running
+        if was_running:
+            previous_state = self.engine.current_state
+            phase_completed = self.engine.pause()
+            self._record_completed_focus(previous_state, phase_completed)
+
+        elapsed_time = self.engine.focus_elapsed_time
+        elapsed_seconds = elapsed_time
+        if elapsed_seconds > 0:
+            self._reset_was_running = was_running
             self._pending_reset_elapsed_seconds = elapsed_seconds
-            self._pending_reset_ended_at = datetime.now().astimezone()
-            self.engine.pause()
+            if (
+                self._focus_started_at is not None
+                and self._focus_started_clock is not None
+            ):
+                session_elapsed_time = (
+                    self.engine.elapsed_clock_time() - self._focus_started_clock
+                )
+                ended_at = self._focus_started_at + timedelta(
+                    seconds=max(0.0, session_elapsed_time)
+                )
+            else:
+                ended_at = self._now()
+            self._pending_reset_ended_at = ended_at
             self._update_ui()
             self.push_screen(
                 ResetConfirmationModal(elapsed_seconds),
@@ -334,13 +391,13 @@ class PomodoroTUI(App):
             if self._reset_was_running:
                 self.engine.start()
             self._reset_was_running = False
-            self._pending_reset_elapsed_seconds = 0
+            self._pending_reset_elapsed_seconds = 0.0
             self._pending_reset_ended_at = None
             self._update_ui()
             return
 
         if decision == "save":
-            ended_at = self._pending_reset_ended_at or datetime.now().astimezone()
+            ended_at = self._pending_reset_ended_at or self._now()
             started_at = self._focus_started_at or ended_at - timedelta(
                 seconds=self._pending_reset_elapsed_seconds
             )
@@ -357,8 +414,9 @@ class PomodoroTUI(App):
     def _perform_reset(self) -> None:
         self.engine.reset()
         self._focus_started_at = None
+        self._focus_started_clock = None
         self._reset_was_running = False
-        self._pending_reset_elapsed_seconds = 0
+        self._pending_reset_elapsed_seconds = 0.0
         self._pending_reset_ended_at = None
         self._update_ui()
 

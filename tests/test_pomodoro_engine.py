@@ -1,10 +1,12 @@
+import src.core.pomodoro_engine as engine_module
 from src.core.pomodoro_engine import PomodoroEngine, TimerState
 
 
-def test_completed_focus_advances_to_short_break():
-    engine = PomodoroEngine(focus_time=1)
+def test_completed_focus_advances_to_short_break(fake_clock):
+    engine = PomodoroEngine(focus_time=1, clock=fake_clock)
 
     engine.start()
+    fake_clock.advance(1)
 
     assert engine.tick() is True
     assert engine.current_state == TimerState.SHORT_BREAK
@@ -12,28 +14,32 @@ def test_completed_focus_advances_to_short_break():
     assert engine.is_running is False
 
 
-def test_fourth_completed_focus_advances_to_long_break():
+def test_fourth_completed_focus_advances_to_long_break(fake_clock):
     engine = PomodoroEngine(
         focus_time=1,
         short_break_time=1,
         cycles_before_long_break=4,
+        clock=fake_clock,
     )
 
     for _ in range(3):
         engine.start()
+        fake_clock.advance(1)
         engine.tick()
         engine.start()
+        fake_clock.advance(1)
         engine.tick()
 
     engine.start()
+    fake_clock.advance(1)
     engine.tick()
 
     assert engine.current_state == TimerState.LONG_BREAK
     assert engine.completed_cycles == 4
 
 
-def test_skipped_focus_is_not_counted_as_completed():
-    engine = PomodoroEngine()
+def test_skipped_focus_is_not_counted_as_completed(fake_clock):
+    engine = PomodoroEngine(clock=fake_clock)
     engine.start()
 
     engine.skip_phase()
@@ -43,8 +49,8 @@ def test_skipped_focus_is_not_counted_as_completed():
     assert engine.is_running is False
 
 
-def test_skip_does_nothing_while_stopped():
-    engine = PomodoroEngine()
+def test_skip_does_nothing_while_stopped(fake_clock):
+    engine = PomodoroEngine(clock=fake_clock)
 
     engine.skip_phase()
 
@@ -52,9 +58,10 @@ def test_skip_does_nothing_while_stopped():
     assert engine.seconds_remaining == engine.focus_time
 
 
-def test_reset_clears_completed_cycles():
-    engine = PomodoroEngine(focus_time=1)
+def test_reset_clears_completed_cycles(fake_clock):
+    engine = PomodoroEngine(focus_time=1, clock=fake_clock)
     engine.start()
+    fake_clock.advance(1)
     engine.tick()
 
     engine.reset()
@@ -62,3 +69,60 @@ def test_reset_clears_completed_cycles():
     assert engine.current_state == TimerState.STOPPED
     assert engine.completed_cycles == 0
     assert engine.seconds_remaining == engine.focus_time
+
+
+def test_delayed_tick_uses_actual_elapsed_time(fake_clock):
+    engine = PomodoroEngine(focus_time=10, clock=fake_clock)
+    engine.start()
+
+    fake_clock.advance(3.4)
+    phase_completed = engine.tick()
+
+    assert phase_completed is False
+    assert engine.seconds_remaining == 7
+
+
+def test_delayed_tick_completes_phase_after_deadline(fake_clock):
+    engine = PomodoroEngine(focus_time=10, clock=fake_clock)
+    engine.start()
+
+    fake_clock.advance(15)
+
+    assert engine.tick() is True
+    assert engine.current_state == TimerState.SHORT_BREAK
+    assert engine.completion_overdue_seconds == 5
+
+
+def test_pause_and_resume_preserve_fractional_elapsed_time(fake_clock):
+    engine = PomodoroEngine(focus_time=10, clock=fake_clock)
+    engine.start()
+    fake_clock.advance(2.4)
+
+    assert engine.pause() is False
+    assert engine.seconds_remaining == 8
+
+    fake_clock.advance(100)
+    assert engine.tick() is False
+    assert engine.seconds_remaining == 8
+
+    engine.start()
+    fake_clock.advance(7.6)
+
+    assert engine.tick() is True
+    assert engine.current_state == TimerState.SHORT_BREAK
+
+
+def test_system_clock_uses_boottime_when_available(monkeypatch):
+    monkeypatch.setattr(engine_module.time, "CLOCK_BOOTTIME", 7, raising=False)
+    monkeypatch.setattr(
+        engine_module.time, "clock_gettime", lambda clock_id: 42.0, raising=False
+    )
+
+    assert engine_module._system_elapsed_time() == 42.0
+
+
+def test_system_clock_falls_back_to_monotonic(monkeypatch):
+    monkeypatch.delattr(engine_module.time, "CLOCK_BOOTTIME", raising=False)
+    monkeypatch.setattr(engine_module.time, "monotonic", lambda: 42.0)
+
+    assert engine_module._system_elapsed_time() == 42.0

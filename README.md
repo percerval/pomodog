@@ -36,6 +36,19 @@ uv sync
 uv run python main.py
 ```
 
+## Precisão do timer
+
+O intervalo de um segundo da TUI serve apenas para atualizar a tela. O engine
+calcula o tempo restante a partir de um deadline, portanto callbacks atrasados
+não prolongam a sessão artificialmente.
+
+No Linux, o relógio usa `CLOCK_BOOTTIME`, que é monotônico e inclui o período em
+que o sistema permaneceu suspenso. Em outras plataformas, o fallback é
+`time.monotonic()`. Pause e resume preservam também as frações de segundo já
+decorridas. Timestamps são ancorados em UTC e avançados pela mesma linha de
+tempo monotônica, evitando atribuir a uma sessão o horário de um callback
+atrasado ou de um relógio civil reajustado.
+
 Atalhos disponíveis:
 
 | Tecla | Ação |
@@ -115,6 +128,8 @@ diretório.
 Segundos são a unidade canônica para evitar perda de precisão. Sessões
 `completed` e `interrupted` somam tempo de foco, mas somente `completed`
 incrementa a quantidade de sessões e o ciclo usado para calcular pausas longas.
+Durações subsegundo são preservadas e os agregados são normalizados para evitar
+erros cumulativos de ponto flutuante.
 
 Arquivos no formato legado são migrados automaticamente. Os totais históricos
 são preservados, mas não podem ser convertidos em sessões individuais porque o
@@ -144,7 +159,7 @@ pomodog/
 
 ## Roadmap
 
-1. Consolidar precisão e recuperação do timer.
+1. Recuperar uma sessão em andamento após encerramento inesperado.
 2. Associar sessões de foco a tarefas.
 3. Criar consultas e resumos de produtividade.
 4. Exportar relatórios para Markdown e CSV.

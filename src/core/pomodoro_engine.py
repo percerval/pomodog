@@ -1,4 +1,13 @@
+import math
+import time
+from collections.abc import Callable
 from enum import Enum
+
+
+def _system_elapsed_time() -> float:
+    if hasattr(time, "CLOCK_BOOTTIME"):
+        return time.clock_gettime(time.CLOCK_BOOTTIME)
+    return time.monotonic()
 
 class TimerState(Enum):
     """
@@ -24,17 +33,21 @@ class PomodoroEngine:
         short_break_time: int = 5 * 60,
         long_break_time: int = 10 * 60,
         cycles_before_long_break: int = 4,
+        clock: Callable[[], float] = _system_elapsed_time,
     ):
         # Configurações de tempo (em segundos)
         self.focus_time = focus_time
         self.short_break_time = short_break_time
         self.long_break_time = long_break_time
         self.cycles_before_long_break = cycles_before_long_break
+        self._clock = clock
         # Estado interno (Encapsulamento)
         self._current_state = TimerState.STOPPED
-        self._seconds_remaining = self.focus_time
+        self._seconds_remaining = float(self.focus_time)
         self._completed_cycles = 0
         self._is_running = False
+        self._deadline: float | None = None
+        self._completion_overdue_seconds = 0.0
 
     #--------------------------------------------------
     # Getters (Interface pública para leitura de dados)
@@ -45,7 +58,7 @@ class PomodoroEngine:
     
     @property
     def seconds_remaining(self) -> int:
-        return self._seconds_remaining
+        return max(0, math.ceil(self._seconds_remaining))
 
     @property
     def completed_cycles(self) -> int:
@@ -54,6 +67,19 @@ class PomodoroEngine:
     @property
     def is_running(self) -> bool:
         return self._is_running
+
+    @property
+    def completion_overdue_seconds(self) -> float:
+        return self._completion_overdue_seconds
+
+    @property
+    def focus_elapsed_time(self) -> float:
+        if self._current_state != TimerState.FOCUS:
+            return 0.0
+        return max(0.0, self.focus_time - self._seconds_remaining)
+
+    def elapsed_clock_time(self) -> float:
+        return self._clock()
 
     #--------------------------------------
     # Métodos de Ação (Comandos do usuário)
@@ -64,17 +90,26 @@ class PomodoroEngine:
         ---
         Se o estado for STOPPED, define estado inicial para FOCUS.
         """
+        if self._is_running:
+            return
+
         if self._current_state == TimerState.STOPPED:
             self._current_state = TimerState.FOCUS
-            self._seconds_remaining = self.focus_time
+            self._seconds_remaining = float(self.focus_time)
         
         self._is_running = True
+        self._deadline = self._clock() + self._seconds_remaining
+        self._completion_overdue_seconds = 0.0
 
-    def pause(self):
+    def pause(self) -> bool:
         """
-        Pausar temporariamente a contagem sem alterar o estado atual.
+        Sincronizar e pausar a contagem, concluindo a fase se o prazo expirou.
         """
-        self._is_running = False
+        phase_completed = self.tick()
+        if self._is_running:
+            self._is_running = False
+            self._deadline = None
+        return phase_completed
 
     def reset(self):
         """
@@ -82,8 +117,10 @@ class PomodoroEngine:
         """
         self._is_running = False
         self._current_state = TimerState.STOPPED
-        self._seconds_remaining = self.focus_time
+        self._seconds_remaining = float(self.focus_time)
         self._completed_cycles = 0
+        self._deadline = None
+        self._completion_overdue_seconds = 0.0
 
     def skip_phase(self):
         """Pula a fase atual sem contabilizar um foco concluído."""
@@ -94,22 +131,25 @@ class PomodoroEngine:
     
     def tick(self) -> bool:
         """
-        Avançar 1 segundo no temporizador.
+        Sincronizar o temporizador com o tempo realmente decorrido.
         ---
         Deve ser chamado periodicamente pelo 'loop' do sistema.
         Retorna True se o ciclo/fase foi concluído neste tick.
         Caso contrário False.
         """
-        if not self._is_running or self._seconds_remaining <= 0:
+        if not self._is_running or self._deadline is None:
             return False
-        
-        self._seconds_remaining -= 1
+
+        seconds_until_deadline = self._deadline - self._clock()
+        self._seconds_remaining = max(0.0, seconds_until_deadline)
 
         # Quando o tempo zerar, avançar para a próxima fase
-        if self._seconds_remaining == 0:
+        if self._seconds_remaining <= 0:
+            self._completion_overdue_seconds = max(0.0, -seconds_until_deadline)
             self._advance_to_next_state()
             return True # Sinaliza que uma fase acabou
 
+        self._completion_overdue_seconds = 0.0
         return False
 
     #-------------------------------------------------------------
@@ -120,6 +160,7 @@ class PomodoroEngine:
         Gerenciar a transição automatica entre FOCUS -> PAUSE -> FOCUS.
         """
         self._is_running = False # Pausa ao trocar de fase
+        self._deadline = None
 
         if self._current_state == TimerState.FOCUS:
             if count_completed_focus:
@@ -131,10 +172,10 @@ class PomodoroEngine:
                 and self._completed_cycles % self.cycles_before_long_break == 0
             ):
                 self._current_state = TimerState.LONG_BREAK
-                self._seconds_remaining = self.long_break_time
+                self._seconds_remaining = float(self.long_break_time)
             else:
                 self._current_state = TimerState.SHORT_BREAK
-                self._seconds_remaining = self.short_break_time
+                self._seconds_remaining = float(self.short_break_time)
 
         elif self._current_state in (
             TimerState.SHORT_BREAK,
@@ -142,12 +183,11 @@ class PomodoroEngine:
         ):
             # Terminou a pausa, voltar ao foco
             self._current_state = TimerState.FOCUS
-            self._seconds_remaining = self.focus_time
+            self._seconds_remaining = float(self.focus_time)
 
     def formatted_time(self) -> str:
         """
         Método utilitário para formatar o tempo restante em MM:SS.
         """
-        minutes = self._seconds_remaining // 60
-        seconds = self._seconds_remaining % 60
+        minutes, seconds = divmod(self.seconds_remaining, 60)
         return f"{minutes:02d}:{seconds:02d}"

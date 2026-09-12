@@ -134,3 +134,21 @@ def test_repository_groups_session_by_end_date(tmp_path):
     assert repository.get_stats()["history"]["2026-09-06"][
         "completed_sessions"
     ] == 1
+
+
+def test_repository_normalizes_fractional_totals(tmp_path):
+    repository = JSONRepository(str(tmp_path / "stats.json"))
+    started_at = datetime(2026, 9, 5, 14, 0)
+
+    for actual_seconds in (59.9, 0.1):
+        repository.save_focus_session(
+            started_at=started_at,
+            ended_at=started_at.replace(minute=1),
+            planned_seconds=60,
+            actual_seconds=actual_seconds,
+            status="interrupted",
+        )
+
+    data = repository.get_stats()
+    assert data["total_focus_seconds"] == 60.0
+    assert data["history"]["2026-09-05"]["focus_seconds"] == 60.0
