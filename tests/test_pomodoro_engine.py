@@ -1,3 +1,5 @@
+import pytest
+
 import src.core.pomodoro_engine as engine_module
 from src.core.pomodoro_engine import PomodoroEngine, TimerState
 
@@ -110,6 +112,54 @@ def test_pause_and_resume_preserve_fractional_elapsed_time(fake_clock):
 
     assert engine.tick() is True
     assert engine.current_state == TimerState.SHORT_BREAK
+
+
+def test_restore_focus_continues_from_persisted_elapsed_time(fake_clock):
+    engine = PomodoroEngine(focus_time=10, clock=fake_clock)
+
+    engine.restore_focus(4.5)
+
+    assert engine.current_state == TimerState.FOCUS
+    assert engine.focus_elapsed_time == 4.5
+    assert engine.is_running is False
+
+    engine.start()
+    fake_clock.advance(5.5)
+
+    assert engine.tick() is True
+    assert engine.current_state == TimerState.SHORT_BREAK
+
+
+def test_restore_focus_rejects_elapsed_time_outside_duration(fake_clock):
+    engine = PomodoroEngine(focus_time=10, clock=fake_clock)
+
+    with pytest.raises(ValueError, match="out of range"):
+        engine.restore_focus(11)
+
+    with pytest.raises(ValueError, match="greater than zero"):
+        engine.restore_focus(0, planned_seconds=0)
+
+
+def test_recovered_duration_does_not_change_future_focus_configuration(fake_clock):
+    engine = PomodoroEngine(
+        focus_time=10,
+        short_break_time=1,
+        clock=fake_clock,
+    )
+    engine.restore_focus(4, planned_seconds=8)
+    engine.start()
+    fake_clock.advance(4)
+
+    assert engine.tick() is True
+    assert engine.current_state == TimerState.SHORT_BREAK
+
+    engine.start()
+    fake_clock.advance(1)
+
+    assert engine.tick() is True
+    assert engine.current_state == TimerState.FOCUS
+    assert engine.focus_planned_seconds == 10
+    assert engine.seconds_remaining == 10
 
 
 def test_system_clock_uses_boottime_when_available(monkeypatch):

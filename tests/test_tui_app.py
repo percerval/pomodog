@@ -1,4 +1,5 @@
 import asyncio
+from datetime import timedelta
 
 import pytest
 from textual.widgets import Button, Input, Select, Static
@@ -7,6 +8,7 @@ from src.core.pomodoro_engine import PomodoroEngine, TimerState
 from src.data.json_repository import JSONRepository
 from src.ui.tui_app import (
     ExitConfirmationModal,
+    FocusRecoveryModal,
     PomodoroTUI,
     ResetConfirmationModal,
     TaskManagerModal,
@@ -814,5 +816,149 @@ def test_partial_focus_keeps_task_association(tmp_path, fake_clock):
             session = repository.get_stats()["sessions"][0]
             assert session["status"] == "interrupted"
             assert session["task_id"] == task["id"]
+
+    run_scenario(scenario)
+
+
+def test_running_focus_is_checkpointed_every_five_seconds(tmp_path, fake_clock):
+    async def scenario():
+        repository = JSONRepository(str(tmp_path / "stats.json"))
+        engine = PomodoroEngine(focus_time=10, clock=fake_clock)
+        app = PomodoroTUI(engine, repository, now=fake_clock.now)
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.press("space")
+            initial_checkpoint = repository.get_active_focus()
+            assert initial_checkpoint["elapsed_seconds"] == 0
+            assert initial_checkpoint["is_running"] is True
+
+            fake_clock.advance(4)
+            app._on_tick()
+            assert repository.get_active_focus()["elapsed_seconds"] == 0
+
+            fake_clock.advance(1)
+            app._on_tick()
+            checkpoint = repository.get_active_focus()
+            assert checkpoint["elapsed_seconds"] == 5
+            assert checkpoint["checkpointed_at"] == (
+                "2026-09-05T14:00:05+00:00"
+            )
+
+    run_scenario(scenario)
+
+
+def test_pause_and_resume_update_recovery_checkpoint(tmp_path, fake_clock):
+    async def scenario():
+        repository = JSONRepository(str(tmp_path / "stats.json"))
+        engine = PomodoroEngine(focus_time=10, clock=fake_clock)
+        app = PomodoroTUI(engine, repository, now=fake_clock.now)
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.press("space")
+            fake_clock.advance(2)
+            await pilot.press("space")
+            assert repository.get_active_focus()["is_running"] is False
+            assert repository.get_active_focus()["elapsed_seconds"] == 2
+
+            await pilot.press("space")
+            assert repository.get_active_focus()["is_running"] is True
+            assert repository.get_active_focus()["elapsed_seconds"] == 2
+
+    run_scenario(scenario)
+
+
+def test_recovery_resume_preserves_task_and_session_timestamps(tmp_path, fake_clock):
+    async def scenario():
+        repository = JSONRepository(str(tmp_path / "stats.json"))
+        task = repository.create_task("Recovered task")
+        started_at = fake_clock.now()
+        repository.save_active_focus(
+            started_at=started_at,
+            checkpointed_at=started_at + timedelta(seconds=4),
+            planned_seconds=10,
+            elapsed_seconds=4,
+            task_id=task["id"],
+            is_running=True,
+        )
+        engine = PomodoroEngine(focus_time=10, clock=fake_clock)
+        app = PomodoroTUI(engine, repository, now=fake_clock.now)
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            assert isinstance(app.screen, FocusRecoveryModal)
+            await pilot.click("#recovery-resume")
+            await pilot.pause()
+
+            assert engine.current_state == TimerState.FOCUS
+            assert engine.is_running is True
+            assert engine.focus_elapsed_time == 4
+
+            fake_clock.advance(6)
+            app._on_tick()
+
+            session = repository.get_stats()["sessions"][0]
+            assert session["started_at"] == "2026-09-05T14:00:00+00:00"
+            assert session["ended_at"] == "2026-09-05T14:00:10+00:00"
+            assert session["task_id"] == task["id"]
+            assert repository.get_active_focus() is None
+
+    run_scenario(scenario)
+
+
+def test_recovery_can_save_partial_focus(tmp_path, fake_clock):
+    async def scenario():
+        repository = JSONRepository(str(tmp_path / "stats.json"))
+        started_at = fake_clock.now()
+        repository.save_active_focus(
+            started_at=started_at,
+            checkpointed_at=started_at + timedelta(seconds=4),
+            planned_seconds=10,
+            elapsed_seconds=4,
+            task_id=None,
+            is_running=False,
+        )
+        app = PomodoroTUI(
+            PomodoroEngine(focus_time=10, clock=fake_clock),
+            repository,
+            now=fake_clock.now,
+        )
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            assert isinstance(app.screen, FocusRecoveryModal)
+            await pilot.click("#recovery-save")
+            await pilot.pause()
+
+            session = repository.get_stats()["sessions"][0]
+            assert session["status"] == "interrupted"
+            assert session["actual_seconds"] == 4
+            assert session["ended_at"] == "2026-09-05T14:00:04+00:00"
+            assert repository.get_active_focus() is None
+
+    run_scenario(scenario)
+
+
+def test_recovery_can_discard_focus(tmp_path, fake_clock):
+    async def scenario():
+        repository = JSONRepository(str(tmp_path / "stats.json"))
+        started_at = fake_clock.now()
+        repository.save_active_focus(
+            started_at=started_at,
+            checkpointed_at=started_at + timedelta(seconds=2),
+            planned_seconds=10,
+            elapsed_seconds=2,
+            task_id=None,
+            is_running=True,
+        )
+        app = PomodoroTUI(
+            PomodoroEngine(focus_time=10, clock=fake_clock),
+            repository,
+            now=fake_clock.now,
+        )
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.click("#recovery-discard")
+            await pilot.pause()
+
+            assert repository.get_active_focus() is None
+            assert repository.get_stats()["sessions"] == []
 
     run_scenario(scenario)

@@ -38,12 +38,17 @@ class JSONRepository:
             "history": {},
             "tasks": [],
             "active_task_id": None,
+            "active_focus": None,
             "sessions": [],
         }
 
     def _migrate_data(self, data: dict) -> dict:
         schema_version = data.get("schema_version")
         if schema_version == 3:
+            if "active_focus" not in data:
+                migrated_data = {**data, "active_focus": None}
+                self._write_json(migrated_data)
+                return migrated_data
             return data
         if schema_version == 2:
             migrated_data = {
@@ -51,6 +56,7 @@ class JSONRepository:
                 "schema_version": 3,
                 "tasks": [],
                 "active_task_id": None,
+                "active_focus": None,
                 "sessions": [
                     {**session, "task_id": session.get("task_id")}
                     for session in data.get("sessions", [])
@@ -74,6 +80,7 @@ class JSONRepository:
             "history": history,
             "tasks": [],
             "active_task_id": None,
+            "active_focus": None,
             "sessions": [],
         }
         self._write_json(migrated_data)
@@ -122,6 +129,7 @@ class JSONRepository:
         actual_seconds: float,
         status: SessionStatus,
         task_id: str | None = None,
+        resolve_active_focus: bool = False,
     ) -> dict:
         """Registra uma sessão de foco e atualiza os agregados diários."""
         if status not in ("completed", "interrupted"):
@@ -167,6 +175,8 @@ class JSONRepository:
         data["history"][session_day]["focus_seconds"] = round(
             data["history"][session_day]["focus_seconds"] + actual_seconds, 6
         )
+        if resolve_active_focus:
+            data["active_focus"] = None
 
         self._write_json(data)
         return session
@@ -239,6 +249,54 @@ class JSONRepository:
             data["active_task_id"] = None
         self._write_json(data)
         return task
+
+    def save_active_focus(
+        self,
+        *,
+        started_at: datetime,
+        checkpointed_at: datetime,
+        planned_seconds: int,
+        elapsed_seconds: float,
+        task_id: str | None,
+        is_running: bool,
+    ) -> dict:
+        """Persistir um checkpoint recuperável do foco atual."""
+        if planned_seconds <= 0:
+            raise ValueError("Planned duration must be greater than zero")
+        if elapsed_seconds < 0 or elapsed_seconds > planned_seconds:
+            raise ValueError("Active focus elapsed time is out of range")
+        if checkpointed_at < started_at:
+            raise ValueError("Checkpoint cannot precede focus start")
+
+        data = self._read_json()
+        if task_id is not None and not any(
+            task["id"] == task_id for task in data["tasks"]
+        ):
+            raise ValueError(f"Unknown task: {task_id}")
+
+        active_focus = {
+            "started_at": started_at.isoformat(),
+            "checkpointed_at": checkpointed_at.isoformat(),
+            "planned_seconds": planned_seconds,
+            "elapsed_seconds": round(elapsed_seconds, 6),
+            "task_id": task_id,
+            "is_running": is_running,
+        }
+        data["active_focus"] = active_focus
+        self._write_json(data)
+        return active_focus
+
+    def get_active_focus(self) -> dict | None:
+        """Retornar o checkpoint de foco ainda não resolvido."""
+        return self._read_json()["active_focus"]
+
+    def clear_active_focus(self) -> None:
+        """Remover o checkpoint após conclusão, descarte ou saída segura."""
+        data = self._read_json()
+        if data["active_focus"] is None:
+            return
+        data["active_focus"] = None
+        self._write_json(data)
 
     def get_stats(self) -> dict:
         """

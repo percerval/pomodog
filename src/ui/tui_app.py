@@ -25,6 +25,7 @@ _TITLE_3D = """
 """
 
 ResetDecision = Literal["save", "discard"]
+RecoveryDecision = Literal["resume", "save", "discard"]
 TaskAction = Literal["create", "select", "unassociate", "complete"]
 TaskDecision = tuple[TaskAction, str | None]
 
@@ -122,6 +123,81 @@ class ExitConfirmationModal(ResetConfirmationModal):
 
     DIALOG_TITLE = "Exit Pomodog?"
     DIALOG_QUESTION = "Save this partial session before exiting?"
+
+
+class FocusRecoveryModal(ModalScreen[RecoveryDecision]):
+    """Resolver um foco encontrado após encerramento inesperado."""
+
+    AUTO_FOCUS = "#recovery-resume"
+
+    CSS = """
+    FocusRecoveryModal {
+        align: center middle;
+    }
+
+    #recovery-dialog {
+        width: 82;
+        height: 16;
+        border: heavy #00E5FF;
+        padding: 1 2;
+        background: #0D1117;
+    }
+
+    #recovery-title, #recovery-message, #recovery-task {
+        text-align: center;
+        margin-bottom: 1;
+    }
+
+    #recovery-title {
+        text-style: bold;
+        color: #FFFFFF;
+    }
+
+    #recovery-actions {
+        height: 3;
+        align: center middle;
+    }
+
+    #recovery-actions Button {
+        width: 20;
+        margin: 0 1;
+    }
+    """
+
+    def __init__(self, *, elapsed_seconds: float, task_title: str | None):
+        super().__init__()
+        self.elapsed_seconds = elapsed_seconds
+        self.task_title = task_title
+
+    def compose(self) -> ComposeResult:
+        minutes, seconds = divmod(max(0, math.floor(self.elapsed_seconds)), 60)
+        with Container(id="recovery-dialog"):
+            yield Static("Recover interrupted focus?", id="recovery-title")
+            yield Static(
+                f"Recovered checkpoint: {minutes:02d}:{seconds:02d}",
+                id="recovery-message",
+            )
+            yield Static(
+                f"Task: {self.task_title or 'None'}",
+                id="recovery-task",
+                markup=False,
+            )
+            with Horizontal(id="recovery-actions"):
+                yield Button("Resume", id="recovery-resume")
+                yield Button(
+                    "Save Partial",
+                    id="recovery-save",
+                    disabled=self.elapsed_seconds <= 0,
+                )
+                yield Button("Discard", id="recovery-discard")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        decisions: dict[str, RecoveryDecision] = {
+            "recovery-resume": "resume",
+            "recovery-save": "save",
+            "recovery-discard": "discard",
+        }
+        self.dismiss(decisions[event.button.id])
 
 
 class TaskManagerModal(ModalScreen[TaskDecision]):
@@ -280,6 +356,8 @@ class PomodoroTUI(App):
     Interface de Terminal (TUI) interativa para o Pomodoro Dog.
     """
 
+    _CHECKPOINT_INTERVAL_SECONDS = 5.0
+
     CSS = """
     Screen {
         align: center middle;
@@ -405,6 +483,8 @@ class PomodoroTUI(App):
         self._pending_exit_elapsed_seconds = 0.0
         self._pending_exit_ended_at: datetime | None = None
         self._exit_confirmation_pending = False
+        self._pending_recovery = self.repo.get_active_focus()
+        self._last_focus_checkpoint_elapsed = 0.0
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -440,6 +520,14 @@ class PomodoroTUI(App):
         Configura o timer contínuo (1 segundo).
         """
         self.set_interval(1.0, self._on_tick)
+        if self._pending_recovery is not None:
+            self.push_screen(
+                FocusRecoveryModal(
+                    elapsed_seconds=self._pending_recovery["elapsed_seconds"],
+                    task_title=self._recovery_task_title(self._pending_recovery),
+                ),
+                self._handle_recovery_decision,
+            )
 
     def _on_tick(self) -> None:
         """
@@ -449,6 +537,8 @@ class PomodoroTUI(App):
             previous_state = self.engine.current_state
             phase_completed = self.engine.tick()
             self._handle_phase_completion(previous_state, phase_completed)
+            if previous_state == TimerState.FOCUS and not phase_completed:
+                self._persist_active_focus()
         # Atualizamos a interface visual a cada tick independente de estar rodando
         self._update_ui()
 
@@ -474,18 +564,22 @@ class PomodoroTUI(App):
                 ended_at = self._now() - timedelta(
                     seconds=self.engine.completion_overdue_seconds
                 )
-                started_at = ended_at - timedelta(seconds=self.engine.focus_time)
+                started_at = ended_at - timedelta(
+                    seconds=self.engine.focus_planned_seconds
+                )
             self.repo.save_focus_session(
                 started_at=started_at,
                 ended_at=ended_at,
-                planned_seconds=self.engine.focus_time,
-                actual_seconds=self.engine.focus_time,
+                planned_seconds=self.engine.focus_planned_seconds,
+                actual_seconds=self.engine.focus_planned_seconds,
                 status="completed",
                 task_id=self._focus_task_id,
+                resolve_active_focus=True,
             )
             self._focus_started_at = None
             self._focus_started_clock = None
             self._focus_task_id = None
+            self._last_focus_checkpoint_elapsed = 0.0
 
         self._play_completion_sound()
         self._show_completion_notification(previous_state)
@@ -504,6 +598,92 @@ class PomodoroTUI(App):
         except RuntimeError:
             # A reprodução pode falhar depois que a TUI já foi encerrada.
             pass
+
+    def _handle_recovery_decision(self, decision: RecoveryDecision) -> None:
+        active_focus = self._pending_recovery
+        if active_focus is None:
+            return
+
+        started_at = datetime.fromisoformat(active_focus["started_at"])
+        checkpointed_at = datetime.fromisoformat(active_focus["checkpointed_at"])
+        elapsed_seconds = active_focus["elapsed_seconds"]
+        task_id = active_focus.get("task_id")
+
+        if decision == "resume":
+            self.engine.restore_focus(
+                elapsed_seconds,
+                planned_seconds=active_focus["planned_seconds"],
+            )
+            checkpoint_span = max(
+                0.0, (checkpointed_at - started_at).total_seconds()
+            )
+            self._focus_started_at = started_at
+            self._focus_started_clock = (
+                self.engine.elapsed_clock_time() - checkpoint_span
+            )
+            self._focus_task_id = task_id
+            self._last_focus_checkpoint_elapsed = elapsed_seconds
+            self._pending_recovery = None
+            self.engine.start()
+            self._persist_active_focus(force=True)
+            self._update_ui()
+            return
+
+        if decision == "save" and elapsed_seconds > 0:
+            self.repo.save_focus_session(
+                started_at=started_at,
+                ended_at=checkpointed_at,
+                planned_seconds=active_focus["planned_seconds"],
+                actual_seconds=elapsed_seconds,
+                status="interrupted",
+                task_id=task_id,
+                resolve_active_focus=True,
+            )
+
+        self.repo.clear_active_focus()
+        self._pending_recovery = None
+        self._last_focus_checkpoint_elapsed = 0.0
+        self._update_ui()
+
+    def _recovery_task_title(self, active_focus: dict) -> str | None:
+        task_id = active_focus.get("task_id")
+        if task_id is None:
+            return None
+        task = next(
+            (task for task in self.repo.get_tasks() if task["id"] == task_id),
+            None,
+        )
+        return task["title"] if task is not None else None
+
+    def _persist_active_focus(self, *, force: bool = False) -> None:
+        if (
+            self.engine.current_state != TimerState.FOCUS
+            or self._focus_started_at is None
+            or self._focus_started_clock is None
+        ):
+            return
+
+        elapsed_seconds = self.engine.focus_elapsed_time
+        if (
+            not force
+            and elapsed_seconds - self._last_focus_checkpoint_elapsed
+            < self._CHECKPOINT_INTERVAL_SECONDS
+        ):
+            return
+
+        session_span = self.engine.elapsed_clock_time() - self._focus_started_clock
+        checkpointed_at = self._focus_started_at + timedelta(
+            seconds=max(0.0, session_span)
+        )
+        self.repo.save_active_focus(
+            started_at=self._focus_started_at,
+            checkpointed_at=checkpointed_at,
+            planned_seconds=self.engine.focus_planned_seconds,
+            elapsed_seconds=elapsed_seconds,
+            task_id=self._focus_task_id,
+            is_running=self.engine.is_running,
+        )
+        self._last_focus_checkpoint_elapsed = elapsed_seconds
 
     def _show_completion_notification(self, previous_state: TimerState) -> None:
         if self._desktop_notifier is None:
@@ -568,6 +748,7 @@ class PomodoroTUI(App):
                     self._focus_task_id = (
                         active_task["id"] if active_task is not None else None
                     )
+        self._persist_active_focus(force=True)
         self._update_ui()
 
     def action_skip_phase(self) -> None:
@@ -583,9 +764,11 @@ class PomodoroTUI(App):
         skipped_focus = self.engine.current_state == TimerState.FOCUS
         self.engine.skip_phase()
         if skipped_focus:
+            self.repo.clear_active_focus()
             self._focus_started_at = None
             self._focus_started_clock = None
             self._focus_task_id = None
+            self._last_focus_checkpoint_elapsed = 0.0
         self._update_ui()
 
     def action_reset_timer(self) -> None:
@@ -594,6 +777,8 @@ class PomodoroTUI(App):
             previous_state = self.engine.current_state
             phase_completed = self.engine.pause()
             self._handle_phase_completion(previous_state, phase_completed)
+            if not phase_completed:
+                self._persist_active_focus(force=True)
 
         elapsed_time = self.engine.focus_elapsed_time
         elapsed_seconds = elapsed_time
@@ -617,6 +802,7 @@ class PomodoroTUI(App):
             self._reset_was_running = False
             self._pending_reset_elapsed_seconds = 0.0
             self._pending_reset_ended_at = None
+            self._persist_active_focus(force=True)
             self._update_ui()
             return
 
@@ -631,12 +817,14 @@ class PomodoroTUI(App):
 
     def _perform_reset(self) -> None:
         self.engine.reset()
+        self.repo.clear_active_focus()
         self._focus_started_at = None
         self._focus_started_clock = None
         self._focus_task_id = None
         self._reset_was_running = False
         self._pending_reset_elapsed_seconds = 0.0
         self._pending_reset_ended_at = None
+        self._last_focus_checkpoint_elapsed = 0.0
         self._update_ui()
 
     def action_request_quit(self) -> None:
@@ -651,6 +839,7 @@ class PomodoroTUI(App):
             if phase_completed:
                 self._finish_exit()
                 return
+            self._persist_active_focus(force=True)
 
         elapsed_seconds = self.engine.focus_elapsed_time
         if self.engine.current_state == TimerState.FOCUS and elapsed_seconds > 0:
@@ -676,6 +865,7 @@ class PomodoroTUI(App):
             if self._exit_was_running:
                 self.engine.start()
             self._clear_pending_exit()
+            self._persist_active_focus(force=True)
             self._update_ui()
             return
 
@@ -710,10 +900,11 @@ class PomodoroTUI(App):
         self.repo.save_focus_session(
             started_at=started_at,
             ended_at=ended_at,
-            planned_seconds=self.engine.focus_time,
+            planned_seconds=self.engine.focus_planned_seconds,
             actual_seconds=elapsed_seconds,
             status="interrupted",
             task_id=self._focus_task_id,
+            resolve_active_focus=True,
         )
 
     def _clear_pending_exit(self) -> None:
@@ -723,6 +914,7 @@ class PomodoroTUI(App):
         self._exit_confirmation_pending = False
 
     def _finish_exit(self) -> None:
+        self.repo.clear_active_focus()
         for notifier in (self._notifier, self._desktop_notifier):
             wait = getattr(notifier, "wait", None)
             if wait is None:

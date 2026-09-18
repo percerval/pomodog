@@ -12,6 +12,7 @@ O escopo atual é intencionalmente pequeno:
 - controles para iniciar, pausar, pular e resetar;
 - persistência local de sessões concluídas e focos parciais salvos em JSON;
 - associação opcional de sessões a tasks;
+- recuperação de foco após encerramento inesperado;
 - notificação sonora ao concluir foco ou pausa;
 - notificação desktop com ícone ao concluir foco ou pausa.
 
@@ -93,6 +94,22 @@ evitar trocar a associação no meio de uma sessão, alterações ficam bloquead
 enquanto houver um foco iniciado, mesmo que esteja pausado. Durante pausas do
 ciclo e antes de iniciar o próximo foco, o gerenciamento volta a ser liberado.
 
+## Recuperação de foco
+
+Enquanto um foco está ativo, o Pomodog persiste um checkpoint ao iniciar,
+pausar, retomar e aproximadamente a cada cinco segundos. Se o processo for
+interrompido sem passar pela saída segura, a próxima execução oferece:
+
+- `Resume`: continua do tempo salvo, preservando task e timestamps;
+- `Save Partial`: registra o checkpoint como sessão interrompida;
+- `Discard`: descarta o foco recuperado.
+
+Somente focos são recuperados; breaks continuam transitórios. O período após o
+último checkpoint não é contabilizado, evitando tratar como trabalho o tempo em
+que a aplicação ou o computador ficaram desligados. Registrar a sessão
+recuperada e remover o checkpoint ocorre na mesma escrita atômica, impedindo
+duplicação caso haja uma nova falha nesse momento.
+
 ## Notificação sonora
 
 O mesmo sino curto é reproduzido quando um foco ou uma pausa termina
@@ -168,6 +185,14 @@ As estatísticas ficam em `data/stats.json`:
     }
   ],
   "active_task_id": "task-uuid-...",
+  "active_focus": {
+    "started_at": "2026-09-05T14:00:00-03:00",
+    "checkpointed_at": "2026-09-05T14:12:30-03:00",
+    "planned_seconds": 1500,
+    "elapsed_seconds": 750,
+    "task_id": "task-uuid-...",
+    "is_running": true
+  },
   "sessions": [
     {
       "id": "a1b2c3d4-...",
@@ -195,7 +220,8 @@ erros cumulativos de ponto flutuante.
 Arquivos nos schemas legado e v2 são migrados automaticamente. Totais,
 histórico e sessões existentes são preservados; sessões antigas permanecem com
 `task_id: null`. Tasks concluídas não são removidas, mantendo válidas as
-referências históricas.
+referências históricas. Arquivos v3 anteriores à recuperação recebem
+`active_focus: null` automaticamente.
 
 As sessões são agrupadas pela data de término e as gravações usam substituição
 atômica do arquivo para reduzir o risco de corrupção por interrupções.
@@ -229,7 +255,6 @@ pomodog/
 
 ## Roadmap
 
-1. Recuperar uma sessão em andamento após encerramento inesperado.
-2. Criar consultas e resumos de produtividade por task.
-3. Exportar relatórios para Markdown e CSV.
-4. Exportar relatórios para PDF e outros documentos.
+1. Criar consultas e resumos de produtividade por task.
+2. Exportar relatórios para Markdown e CSV.
+3. Exportar relatórios para PDF e outros documentos.

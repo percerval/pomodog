@@ -17,6 +17,7 @@ def test_repository_creates_an_empty_stats_file(tmp_path):
         "history": {},
         "tasks": [],
         "active_task_id": None,
+        "active_focus": None,
         "sessions": [],
     }
 
@@ -95,6 +96,7 @@ def test_repository_migrates_legacy_aggregates(tmp_path):
         },
         "tasks": [],
         "active_task_id": None,
+        "active_focus": None,
         "sessions": [],
     }
 
@@ -191,6 +193,7 @@ def test_repository_migrates_v2_sessions_without_losing_data(tmp_path):
     assert data["schema_version"] == 3
     assert data["tasks"] == []
     assert data["active_task_id"] is None
+    assert data["active_focus"] is None
     assert data["sessions"] == [{**original_session, "task_id": None}]
     assert data["total_focus_seconds"] == 1500
 
@@ -269,3 +272,95 @@ def test_repository_rejects_session_with_unknown_task(tmp_path):
         )
 
     assert repository.get_stats()["sessions"] == []
+
+
+def test_repository_adds_active_focus_to_existing_v3_file(tmp_path):
+    stats_path = tmp_path / "stats.json"
+    original_data = {
+        "schema_version": 3,
+        "total_focus_seconds": 0,
+        "history": {},
+        "tasks": [],
+        "active_task_id": None,
+        "sessions": [],
+    }
+    stats_path.write_text(json.dumps(original_data), encoding="utf-8")
+
+    data = JSONRepository(str(stats_path)).get_stats()
+
+    assert data == {**original_data, "active_focus": None}
+
+
+def test_repository_saves_and_clears_active_focus(tmp_path):
+    stats_path = tmp_path / "stats.json"
+    repository = JSONRepository(str(stats_path))
+    task = repository.create_task("Recover me")
+    started_at = datetime(2026, 9, 5, 14, 0)
+    checkpointed_at = datetime(2026, 9, 5, 14, 5)
+
+    active_focus = repository.save_active_focus(
+        started_at=started_at,
+        checkpointed_at=checkpointed_at,
+        planned_seconds=1500,
+        elapsed_seconds=300,
+        task_id=task["id"],
+        is_running=True,
+    )
+
+    assert JSONRepository(str(stats_path)).get_active_focus() == active_focus
+    assert active_focus == {
+        "started_at": "2026-09-05T14:00:00",
+        "checkpointed_at": "2026-09-05T14:05:00",
+        "planned_seconds": 1500,
+        "elapsed_seconds": 300,
+        "task_id": task["id"],
+        "is_running": True,
+    }
+
+    repository.clear_active_focus()
+
+    assert repository.get_active_focus() is None
+
+
+def test_repository_rejects_invalid_active_focus_without_overwriting(tmp_path):
+    repository = JSONRepository(str(tmp_path / "stats.json"))
+    timestamp = datetime(2026, 9, 5, 14, 0)
+
+    with pytest.raises(ValueError, match="out of range"):
+        repository.save_active_focus(
+            started_at=timestamp,
+            checkpointed_at=timestamp,
+            planned_seconds=1500,
+            elapsed_seconds=1501,
+            task_id=None,
+            is_running=True,
+        )
+
+    assert repository.get_active_focus() is None
+
+
+def test_saving_session_can_atomically_resolve_active_focus(tmp_path):
+    repository = JSONRepository(str(tmp_path / "stats.json"))
+    started_at = datetime(2026, 9, 5, 14, 0)
+    ended_at = datetime(2026, 9, 5, 14, 5)
+    repository.save_active_focus(
+        started_at=started_at,
+        checkpointed_at=ended_at,
+        planned_seconds=1500,
+        elapsed_seconds=300,
+        task_id=None,
+        is_running=True,
+    )
+
+    repository.save_focus_session(
+        started_at=started_at,
+        ended_at=ended_at,
+        planned_seconds=1500,
+        actual_seconds=300,
+        status="interrupted",
+        resolve_active_focus=True,
+    )
+
+    data = repository.get_stats()
+    assert len(data["sessions"]) == 1
+    assert data["active_focus"] is None

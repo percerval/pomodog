@@ -43,6 +43,7 @@ class PomodoroEngine:
         self._clock = clock
         # Estado interno (Encapsulamento)
         self._current_state = TimerState.STOPPED
+        self._current_focus_duration = self.focus_time
         self._seconds_remaining = float(self.focus_time)
         self._completed_cycles = 0
         self._is_running = False
@@ -76,7 +77,11 @@ class PomodoroEngine:
     def focus_elapsed_time(self) -> float:
         if self._current_state != TimerState.FOCUS:
             return 0.0
-        return max(0.0, self.focus_time - self._seconds_remaining)
+        return max(0.0, self._current_focus_duration - self._seconds_remaining)
+
+    @property
+    def focus_planned_seconds(self) -> int:
+        return self._current_focus_duration
 
     def elapsed_clock_time(self) -> float:
         return self._clock()
@@ -95,6 +100,7 @@ class PomodoroEngine:
 
         if self._current_state == TimerState.STOPPED:
             self._current_state = TimerState.FOCUS
+            self._current_focus_duration = self.focus_time
             self._seconds_remaining = float(self.focus_time)
         
         self._is_running = True
@@ -117,8 +123,26 @@ class PomodoroEngine:
         """
         self._is_running = False
         self._current_state = TimerState.STOPPED
+        self._current_focus_duration = self.focus_time
         self._seconds_remaining = float(self.focus_time)
         self._completed_cycles = 0
+        self._deadline = None
+        self._completion_overdue_seconds = 0.0
+
+    def restore_focus(
+        self, elapsed_seconds: float, planned_seconds: int | None = None
+    ) -> None:
+        """Restaurar um foco pausado a partir de um checkpoint persistido."""
+        focus_duration = self.focus_time if planned_seconds is None else planned_seconds
+        if focus_duration <= 0:
+            raise ValueError("Recovered focus duration must be greater than zero")
+        if elapsed_seconds < 0 or elapsed_seconds > focus_duration:
+            raise ValueError("Recovered focus elapsed time is out of range")
+
+        self._current_focus_duration = focus_duration
+        self._current_state = TimerState.FOCUS
+        self._seconds_remaining = float(focus_duration - elapsed_seconds)
+        self._is_running = False
         self._deadline = None
         self._completion_overdue_seconds = 0.0
 
@@ -183,6 +207,7 @@ class PomodoroEngine:
         ):
             # Terminou a pausa, voltar ao foco
             self._current_state = TimerState.FOCUS
+            self._current_focus_duration = self.focus_time
             self._seconds_remaining = float(self.focus_time)
 
     def formatted_time(self) -> str:
