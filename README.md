@@ -11,11 +11,12 @@ O escopo atual é intencionalmente pequeno:
 - ciclos de foco, pausa curta e pausa longa;
 - controles para iniciar, pausar, pular e resetar;
 - persistência local de sessões concluídas e focos parciais salvos em JSON;
+- associação opcional de sessões a tasks;
 - notificação sonora ao concluir foco ou pausa;
 - notificação desktop com ícone ao concluir foco ou pausa.
 
-O roadmap prevê associar sessões a tarefas e gerar relatórios de foco em PDF e
-outros formatos. Essas funcionalidades ainda não estão implementadas.
+O roadmap prevê gerar consultas e relatórios de foco em PDF e outros formatos.
+Essas funcionalidades ainda não estão implementadas.
 
 ## Requisitos
 
@@ -60,7 +61,8 @@ Atalhos disponíveis:
 | `s` | Pular a fase atual |
 | `r` | Resetar o timer |
 | `m` | Ativar ou silenciar o som |
-| `q` | Sair |
+| `t` | Gerenciar tasks |
+| `q` ou `Ctrl+Q` | Sair com segurança |
 
 Uma fase pulada não é contabilizada como sessão concluída.
 
@@ -72,6 +74,24 @@ Ao resetar um foco parcialmente consumido, a TUI oferece três opções:
 
 Reset restaura o estado inicial e também zera os ciclos concluídos. Em pausas,
 no estado inicial ou antes de consumir tempo de foco, o reset é imediato.
+
+Ao pressionar `q` ou `Ctrl+Q`, a TUI sincroniza o timer antes de sair. Se o
+deadline já passou, a conclusão é registrada e notificada normalmente. Se
+existir um foco parcial, um modal oferece `Save Partial`, `Discard` e `Cancel`;
+cancelar restaura o estado iniciado ou pausado anterior. A saída confirmada
+aguarda brevemente som e popup já iniciados, sem ficar bloqueada indefinidamente.
+
+## Tasks opcionais
+
+O atalho `t` abre o gerenciador de tasks. Nele é possível criar, selecionar,
+desassociar e concluir tasks. A seleção ativa é persistida entre execuções e
+aparece na tela principal, mas não é obrigatória para iniciar um foco.
+
+Ao iniciar um foco, o Pomodog captura a task ativa naquele instante. A mesma
+associação é preservada em pause/resume e em sessões parciais salvas. Para
+evitar trocar a associação no meio de uma sessão, alterações ficam bloqueadas
+enquanto houver um foco iniciado, mesmo que esteja pausado. Durante pausas do
+ciclo e antes de iniciar o próximo foco, o gerenciamento volta a ser liberado.
 
 ## Notificação sonora
 
@@ -119,7 +139,8 @@ main.py                     composição das dependências
 desktop e os injeta na TUI. O Core não depende da interface, da persistência
 nem das notificações. A UI coordena o timer, registra no repository fases
 concluídas e focos parciais que o usuário escolheu salvar e solicita som e
-popup aos notifiers.
+popup aos notifiers. O repository também mantém tasks e sua associação com as
+sessões.
 
 Essa organização é uma arquitetura em camadas simples, não uma implementação
 formal de MVC. Novas camadas devem ser introduzidas apenas quando tarefas,
@@ -131,7 +152,7 @@ As estatísticas ficam em `data/stats.json`:
 
 ```json
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "total_focus_seconds": 754,
   "history": {
     "2026-09-05": {
@@ -139,6 +160,14 @@ As estatísticas ficam em `data/stats.json`:
       "focus_seconds": 754
     }
   },
+  "tasks": [
+    {
+      "id": "task-uuid-...",
+      "title": "Estudar Python",
+      "status": "open"
+    }
+  ],
+  "active_task_id": "task-uuid-...",
   "sessions": [
     {
       "id": "a1b2c3d4-...",
@@ -146,7 +175,8 @@ As estatísticas ficam em `data/stats.json`:
       "ended_at": "2026-09-05T14:12:34-03:00",
       "planned_seconds": 1500,
       "actual_seconds": 754,
-      "status": "interrupted"
+      "status": "interrupted",
+      "task_id": "task-uuid-..."
     }
   ]
 }
@@ -162,9 +192,10 @@ incrementa a quantidade de sessões e o ciclo usado para calcular pausas longas.
 Durações subsegundo são preservadas e os agregados são normalizados para evitar
 erros cumulativos de ponto flutuante.
 
-Arquivos no formato legado são migrados automaticamente. Os totais históricos
-são preservados, mas não podem ser convertidos em sessões individuais porque o
-formato antigo não registrava horários nem durações por sessão.
+Arquivos nos schemas legado e v2 são migrados automaticamente. Totais,
+histórico e sessões existentes são preservados; sessões antigas permanecem com
+`task_id: null`. Tasks concluídas não são removidas, mantendo válidas as
+referências históricas.
 
 As sessões são agrupadas pela data de término e as gravações usam substituição
 atômica do arquivo para reduzir o risco de corrupção por interrupções.
@@ -199,7 +230,6 @@ pomodog/
 ## Roadmap
 
 1. Recuperar uma sessão em andamento após encerramento inesperado.
-2. Associar sessões de foco a tarefas.
-3. Criar consultas e resumos de produtividade.
-4. Exportar relatórios para Markdown e CSV.
-5. Exportar relatórios para PDF e outros documentos.
+2. Criar consultas e resumos de produtividade por task.
+3. Exportar relatórios para Markdown e CSV.
+4. Exportar relatórios para PDF e outros documentos.

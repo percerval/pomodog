@@ -4,9 +4,10 @@ from datetime import datetime, timedelta, timezone
 from typing import Literal
 
 from textual.app import App, ComposeResult
+from textual.content import Content
 from textual.containers import Container, Horizontal, Vertical
 from textual.screen import ModalScreen
-from textual.widgets import Button, Footer, Header, Static
+from textual.widgets import Button, Footer, Header, Input, Select, Static
 
 from src.core.pomodoro_engine import PomodoroEngine, TimerState
 from src.data.json_repository import JSONRepository
@@ -24,6 +25,8 @@ _TITLE_3D = """
 """
 
 ResetDecision = Literal["save", "discard"]
+TaskAction = Literal["create", "select", "unassociate", "complete"]
+TaskDecision = tuple[TaskAction, str | None]
 
 
 def _current_time() -> datetime:
@@ -35,6 +38,8 @@ class ResetConfirmationModal(ModalScreen[ResetDecision]):
 
     AUTO_FOCUS = "#btn-cancel-reset"
     BINDINGS = [("escape", "cancel", "Cancel")]
+    DIALOG_TITLE = "Reset current cycle?"
+    DIALOG_QUESTION = "Save this partial session before resetting?"
 
     CSS = """
     ResetConfirmationModal {
@@ -90,10 +95,9 @@ class ResetConfirmationModal(ModalScreen[ResetDecision]):
     def compose(self) -> ComposeResult:
         minutes, seconds = divmod(max(1, math.ceil(self.elapsed_seconds)), 60)
         with Container(id="reset-dialog"):
-            yield Static("Reset current cycle?", id="reset-title")
+            yield Static(self.DIALOG_TITLE, id="reset-title")
             yield Static(
-                f"You focused for {minutes:02d}:{seconds:02d}. "
-                "Save this partial session before resetting?",
+                f"You focused for {minutes:02d}:{seconds:02d}. {self.DIALOG_QUESTION}",
                 id="reset-message",
             )
             with Horizontal(id="reset-actions"):
@@ -111,6 +115,164 @@ class ResetConfirmationModal(ModalScreen[ResetDecision]):
             "btn-cancel-reset": None,
         }
         self.dismiss(decisions[event.button.id])
+
+
+class ExitConfirmationModal(ResetConfirmationModal):
+    """Solicita uma decisão para o foco parcial antes de sair."""
+
+    DIALOG_TITLE = "Exit Pomodog?"
+    DIALOG_QUESTION = "Save this partial session before exiting?"
+
+
+class TaskManagerModal(ModalScreen[TaskDecision]):
+    """Criar e selecionar a task usada pelos próximos focos."""
+
+    AUTO_FOCUS = "#task-title-input"
+    BINDINGS = [("escape", "cancel", "Close")]
+
+    CSS = """
+    TaskManagerModal {
+        align: center middle;
+    }
+
+    #task-dialog {
+        width: 82;
+        height: 20;
+        border: heavy #00E5FF;
+        padding: 1 2;
+        background: #0D1117;
+    }
+
+    #task-title, #task-active, #task-lock-message {
+        text-align: center;
+        margin-bottom: 1;
+    }
+
+    #task-title {
+        text-style: bold;
+        color: #FFFFFF;
+    }
+
+    #task-lock-message {
+        color: $warning;
+    }
+
+    #task-actions {
+        height: 3;
+        align: center middle;
+        margin-top: 1;
+    }
+
+    #task-actions Button {
+        width: 15;
+        margin: 0 1;
+    }
+
+    #task-close {
+        width: 18;
+        margin: 1 29 0 29;
+    }
+    """
+
+    def __init__(
+        self,
+        *,
+        tasks: list[dict],
+        active_task: dict | None,
+        changes_locked: bool,
+    ):
+        super().__init__()
+        self.tasks = tasks
+        self.active_task = active_task
+        self.changes_locked = changes_locked
+
+    def compose(self) -> ComposeResult:
+        active_title = self.active_task["title"] if self.active_task else "None"
+        selected_task_id = (
+            self.active_task["id"] if self.active_task is not None else Select.NULL
+        )
+        options = [(Content(task["title"]), task["id"]) for task in self.tasks]
+
+        with Container(id="task-dialog"):
+            yield Static("Manage Tasks", id="task-title")
+            yield Static(
+                f"Active Task: {active_title}",
+                id="task-active",
+                markup=False,
+            )
+            if self.changes_locked:
+                yield Static(
+                    "Task changes are locked while a focus is in progress.",
+                    id="task-lock-message",
+                )
+            yield Input(
+                placeholder="New task title",
+                id="task-title-input",
+                disabled=self.changes_locked,
+            )
+            yield Select(
+                options,
+                prompt="Select an open task",
+                value=selected_task_id,
+                id="task-select",
+                disabled=self.changes_locked,
+            )
+            with Horizontal(id="task-actions"):
+                yield Button(
+                    "Create",
+                    id="task-create",
+                    disabled=self.changes_locked,
+                )
+                yield Button(
+                    "Select",
+                    id="task-select-button",
+                    disabled=self.changes_locked,
+                )
+                yield Button(
+                    "Unassociate",
+                    id="task-unassociate",
+                    disabled=self.changes_locked,
+                )
+                yield Button(
+                    "Complete",
+                    id="task-complete",
+                    disabled=self.changes_locked,
+                )
+            yield Button("Close", id="task-close")
+
+    def action_cancel(self) -> None:
+        self.dismiss()
+
+    def _selected_task_id(self) -> str | None:
+        value = self.query_one("#task-select", Select).value
+        return None if value is Select.NULL else str(value)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "task-close":
+            self.dismiss()
+            return
+        if self.changes_locked:
+            return
+
+        if event.button.id == "task-create":
+            title = self.query_one("#task-title-input", Input).value.strip()
+            if not title:
+                self.notify("Task title cannot be empty", severity="warning")
+                return
+            self.dismiss(("create", title))
+            return
+        if event.button.id == "task-unassociate":
+            self.dismiss(("unassociate", None))
+            return
+
+        task_id = self._selected_task_id()
+        if task_id is None:
+            self.notify("Select a task first", severity="warning")
+            return
+        if event.button.id == "task-select-button":
+            self.dismiss(("select", task_id))
+        elif event.button.id == "task-complete":
+            self.dismiss(("complete", task_id))
 
 
 class PomodoroTUI(App):
@@ -145,6 +307,12 @@ class PomodoroTUI(App):
         text-align: center;
         text-style: bold;
         color: $warning;
+        margin-bottom: 1;
+    }
+
+    #active-task-display {
+        text-align: center;
+        color: #00E5FF;
         margin-bottom: 1;
     }
 
@@ -207,7 +375,8 @@ class PomodoroTUI(App):
         ("s", "skip_phase", "Skip Phase"),
         ("r", "reset_timer", "Reset"),
         ("m", "toggle_sound", "Mute Sound"),
-        ("q", "quit", "Quit"),
+        ("t", "manage_tasks", "Tasks"),
+        ("q", "request_quit", "Quit"),
     ]
 
     def __init__(
@@ -228,15 +397,27 @@ class PomodoroTUI(App):
         self._now = now
         self._focus_started_at: datetime | None = None
         self._focus_started_clock: float | None = None
+        self._focus_task_id: str | None = None
         self._reset_was_running = False
         self._pending_reset_elapsed_seconds = 0.0
         self._pending_reset_ended_at: datetime | None = None
+        self._exit_was_running = False
+        self._pending_exit_elapsed_seconds = 0.0
+        self._pending_exit_ended_at: datetime | None = None
+        self._exit_confirmation_pending = False
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         yield Static(_TITLE_3D, id="title-display")
         with Container(id="main-container"):
             yield Static(" CURRENT STATUS: FOCUS ", id="state-label")
+            active_task = self.repo.get_active_task()
+            active_task_title = active_task["title"] if active_task else "None"
+            yield Static(
+                f"Active Task: {active_task_title}",
+                id="active-task-display",
+                markup=False,
+            )
             yield Static(self.engine.formatted_time(), id="timer-display")
 
             with Vertical(id="stats-panel"):
@@ -300,9 +481,11 @@ class PomodoroTUI(App):
                 planned_seconds=self.engine.focus_time,
                 actual_seconds=self.engine.focus_time,
                 status="completed",
+                task_id=self._focus_task_id,
             )
             self._focus_started_at = None
             self._focus_started_clock = None
+            self._focus_task_id = None
 
         self._play_completion_sound()
         self._show_completion_notification(previous_state)
@@ -351,7 +534,13 @@ class PomodoroTUI(App):
         toggle_button.label = (
             "Pause (Space)" if self.engine.is_running else "Start (Space)"
         )
+        self._update_active_task_display()
         self._update_stats_display()
+
+    def _update_active_task_display(self) -> None:
+        active_task = self.repo.get_active_task()
+        title = active_task["title"] if active_task else "None"
+        self.query_one("#active-task-display", Static).update(f"Active Task: {title}")
 
     def _update_stats_display(self) -> None:
         """
@@ -375,6 +564,10 @@ class PomodoroTUI(App):
                 if self._focus_started_at is None:
                     self._focus_started_at = self._now()
                     self._focus_started_clock = self.engine.elapsed_clock_time()
+                    active_task = self.repo.get_active_task()
+                    self._focus_task_id = (
+                        active_task["id"] if active_task is not None else None
+                    )
         self._update_ui()
 
     def action_skip_phase(self) -> None:
@@ -392,6 +585,7 @@ class PomodoroTUI(App):
         if skipped_focus:
             self._focus_started_at = None
             self._focus_started_clock = None
+            self._focus_task_id = None
         self._update_ui()
 
     def action_reset_timer(self) -> None:
@@ -406,19 +600,7 @@ class PomodoroTUI(App):
         if elapsed_seconds > 0:
             self._reset_was_running = was_running
             self._pending_reset_elapsed_seconds = elapsed_seconds
-            if (
-                self._focus_started_at is not None
-                and self._focus_started_clock is not None
-            ):
-                session_elapsed_time = (
-                    self.engine.elapsed_clock_time() - self._focus_started_clock
-                )
-                ended_at = self._focus_started_at + timedelta(
-                    seconds=max(0.0, session_elapsed_time)
-                )
-            else:
-                ended_at = self._now()
-            self._pending_reset_ended_at = ended_at
+            self._pending_reset_ended_at = self._partial_focus_ended_at()
             self._update_ui()
             self.push_screen(
                 ResetConfirmationModal(elapsed_seconds),
@@ -440,15 +622,9 @@ class PomodoroTUI(App):
 
         if decision == "save":
             ended_at = self._pending_reset_ended_at or self._now()
-            started_at = self._focus_started_at or ended_at - timedelta(
-                seconds=self._pending_reset_elapsed_seconds
-            )
-            self.repo.save_focus_session(
-                started_at=started_at,
+            self._save_partial_focus(
+                elapsed_seconds=self._pending_reset_elapsed_seconds,
                 ended_at=ended_at,
-                planned_seconds=self.engine.focus_time,
-                actual_seconds=self._pending_reset_elapsed_seconds,
-                status="interrupted",
             )
 
         self._perform_reset()
@@ -457,10 +633,148 @@ class PomodoroTUI(App):
         self.engine.reset()
         self._focus_started_at = None
         self._focus_started_clock = None
+        self._focus_task_id = None
         self._reset_was_running = False
         self._pending_reset_elapsed_seconds = 0.0
         self._pending_reset_ended_at = None
         self._update_ui()
+
+    def action_request_quit(self) -> None:
+        if self._exit_confirmation_pending:
+            return
+
+        was_running = self.engine.is_running
+        if was_running:
+            previous_state = self.engine.current_state
+            phase_completed = self.engine.pause()
+            self._handle_phase_completion(previous_state, phase_completed)
+            if phase_completed:
+                self._finish_exit()
+                return
+
+        elapsed_seconds = self.engine.focus_elapsed_time
+        if self.engine.current_state == TimerState.FOCUS and elapsed_seconds > 0:
+            self._exit_was_running = was_running
+            self._pending_exit_elapsed_seconds = elapsed_seconds
+            self._pending_exit_ended_at = self._partial_focus_ended_at()
+            self._exit_confirmation_pending = True
+            self._update_ui()
+            self.push_screen(
+                ExitConfirmationModal(elapsed_seconds),
+                self._handle_exit_decision,
+            )
+            return
+
+        self._finish_exit()
+
+    def action_quit(self) -> None:
+        """Redireciona o Ctrl+Q herdado do Textual para a saída segura."""
+        self.action_request_quit()
+
+    def _handle_exit_decision(self, decision: ResetDecision | None) -> None:
+        if decision is None:
+            if self._exit_was_running:
+                self.engine.start()
+            self._clear_pending_exit()
+            self._update_ui()
+            return
+
+        if decision == "save":
+            ended_at = self._pending_exit_ended_at or self._now()
+            self._save_partial_focus(
+                elapsed_seconds=self._pending_exit_elapsed_seconds,
+                ended_at=ended_at,
+            )
+
+        self._focus_started_at = None
+        self._focus_started_clock = None
+        self._focus_task_id = None
+        self._clear_pending_exit()
+        self._finish_exit()
+
+    def _partial_focus_ended_at(self) -> datetime:
+        if (
+            self._focus_started_at is not None
+            and self._focus_started_clock is not None
+        ):
+            elapsed_time = self.engine.elapsed_clock_time() - self._focus_started_clock
+            return self._focus_started_at + timedelta(seconds=max(0.0, elapsed_time))
+        return self._now()
+
+    def _save_partial_focus(
+        self, *, elapsed_seconds: float, ended_at: datetime
+    ) -> None:
+        started_at = self._focus_started_at or ended_at - timedelta(
+            seconds=elapsed_seconds
+        )
+        self.repo.save_focus_session(
+            started_at=started_at,
+            ended_at=ended_at,
+            planned_seconds=self.engine.focus_time,
+            actual_seconds=elapsed_seconds,
+            status="interrupted",
+            task_id=self._focus_task_id,
+        )
+
+    def _clear_pending_exit(self) -> None:
+        self._exit_was_running = False
+        self._pending_exit_elapsed_seconds = 0.0
+        self._pending_exit_ended_at = None
+        self._exit_confirmation_pending = False
+
+    def _finish_exit(self) -> None:
+        for notifier in (self._notifier, self._desktop_notifier):
+            wait = getattr(notifier, "wait", None)
+            if wait is None:
+                continue
+            try:
+                wait(timeout=1.0)
+            except Exception:
+                # Falhas no shutdown de integrações externas não impedem a saída.
+                pass
+        self.exit()
+
+    def action_manage_tasks(self) -> None:
+        self.push_screen(
+            TaskManagerModal(
+                tasks=self.repo.get_tasks(status="open"),
+                active_task=self.repo.get_active_task(),
+                changes_locked=self._task_changes_locked(),
+            ),
+            self._handle_task_decision,
+        )
+
+    def _handle_task_decision(self, decision: TaskDecision | None) -> None:
+        if decision is None:
+            return
+        if self._task_changes_locked():
+            self.notify(
+                "Task changes are locked while a focus is in progress",
+                severity="warning",
+            )
+            return
+
+        action, value = decision
+        if action == "create":
+            task = self.repo.create_task(value or "")
+            self.repo.set_active_task(task["id"])
+            self.notify(f"Task created: {task['title']}", markup=False)
+        elif action == "select" and value is not None:
+            task = self.repo.set_active_task(value)
+            self.notify(f"Task selected: {task['title']}", markup=False)
+        elif action == "unassociate":
+            self.repo.set_active_task(None)
+            self.notify("Task unassociated")
+        elif action == "complete" and value is not None:
+            task = self.repo.complete_task(value)
+            self.notify(f"Task completed: {task['title']}", markup=False)
+        self._update_ui()
+
+    def _task_changes_locked(self) -> bool:
+        return (
+            self.engine.current_state == TimerState.FOCUS
+            and self._focus_started_at is not None
+        )
 
     def action_toggle_sound(self) -> None:
         self._sound_enabled = not self._sound_enabled

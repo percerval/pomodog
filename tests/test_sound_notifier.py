@@ -1,4 +1,5 @@
 import subprocess
+import threading
 from types import SimpleNamespace
 
 import src.notifications.sound_notifier as sound_module
@@ -141,3 +142,30 @@ def test_notifier_returns_false_without_player(tmp_path, monkeypatch):
     monkeypatch.setattr(sound_module.shutil, "which", lambda player: None)
 
     assert SoundNotifier(sound_path).notify() is False
+
+
+def test_wait_allows_started_sound_to_finish(tmp_path, monkeypatch):
+    sound_path = tmp_path / "sound.wav"
+    sound_path.write_bytes(b"RIFF")
+    started = threading.Event()
+    release = threading.Event()
+    monkeypatch.setattr(
+        sound_module.shutil,
+        "which",
+        lambda player: "/usr/bin/pw-play" if player == "pw-play" else None,
+    )
+
+    def run(command, **options):
+        started.set()
+        release.wait(timeout=1)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(sound_module.subprocess, "run", run)
+    notifier = SoundNotifier(sound_path)
+
+    assert notifier.notify() is True
+    assert started.wait(timeout=1)
+    release.set()
+    notifier.wait(timeout=1)
+
+    assert notifier._threads == set()

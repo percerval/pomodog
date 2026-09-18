@@ -1,33 +1,46 @@
 import asyncio
 
 import pytest
-from textual.widgets import Button
+from textual.widgets import Button, Input, Select, Static
 
 from src.core.pomodoro_engine import PomodoroEngine, TimerState
 from src.data.json_repository import JSONRepository
-from src.ui.tui_app import PomodoroTUI, ResetConfirmationModal
+from src.ui.tui_app import (
+    ExitConfirmationModal,
+    PomodoroTUI,
+    ResetConfirmationModal,
+    TaskManagerModal,
+)
 
 
 class FakeNotifier:
     def __init__(self, succeeds=True):
         self.succeeds = succeeds
         self.notifications = 0
+        self.wait_calls = []
 
     def notify(self, on_failure=None):
         self.notifications += 1
         return self.succeeds
+
+    def wait(self, timeout):
+        self.wait_calls.append(timeout)
 
 
 class FakeDesktopNotifier:
     def __init__(self, raises=False):
         self.raises = raises
         self.events = []
+        self.wait_calls = []
 
     def notify(self, event):
         if self.raises:
             raise RuntimeError("desktop indisponível")
         self.events.append(event)
         return True
+
+    def wait(self, timeout):
+        self.wait_calls.append(timeout)
 
 
 def run_scenario(scenario):
@@ -526,5 +539,280 @@ def test_desktop_failure_does_not_break_completion(tmp_path, fake_clock):
 
             assert engine.current_state == TimerState.SHORT_BREAK
             assert len(repository.get_stats()["sessions"]) == 1
+
+    run_scenario(scenario)
+
+
+@pytest.mark.parametrize("quit_key", ["q", "ctrl+q"])
+def test_quit_at_deadline_saves_completion_and_waits_for_notifications(
+    tmp_path, fake_clock, quit_key
+):
+    async def scenario():
+        repository = JSONRepository(str(tmp_path / "stats.json"))
+        engine = PomodoroEngine(focus_time=1, clock=fake_clock)
+        notifier = FakeNotifier()
+        desktop = FakeDesktopNotifier()
+        app = PomodoroTUI(
+            engine,
+            repository,
+            notifier=notifier,
+            desktop_notifier=desktop,
+            now=fake_clock.now,
+        )
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.press("space")
+            fake_clock.advance(1)
+            await pilot.press(quit_key)
+
+        sessions = repository.get_stats()["sessions"]
+        assert len(sessions) == 1
+        assert sessions[0]["status"] == "completed"
+        assert notifier.notifications == 1
+        assert desktop.events == ["focus-complete"]
+        assert notifier.wait_calls == [1.0]
+        assert desktop.wait_calls == [1.0]
+
+    run_scenario(scenario)
+
+
+def test_quit_can_save_partial_focus(tmp_path, fake_clock):
+    async def scenario():
+        repository = JSONRepository(str(tmp_path / "stats.json"))
+        engine = PomodoroEngine(focus_time=10, clock=fake_clock)
+        app = PomodoroTUI(engine, repository, now=fake_clock.now)
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.press("space")
+            fake_clock.advance(2)
+            await pilot.press("q")
+
+            assert isinstance(app.screen, ExitConfirmationModal)
+            await pilot.click("#btn-save-reset")
+
+        session = repository.get_stats()["sessions"][0]
+        assert session["status"] == "interrupted"
+        assert session["actual_seconds"] == 2
+
+    run_scenario(scenario)
+
+
+def test_quit_can_discard_partial_focus(tmp_path, fake_clock):
+    async def scenario():
+        repository = JSONRepository(str(tmp_path / "stats.json"))
+        engine = PomodoroEngine(focus_time=10, clock=fake_clock)
+        app = PomodoroTUI(engine, repository, now=fake_clock.now)
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.press("space")
+            fake_clock.advance(2)
+            await pilot.press("q")
+            await pilot.click("#btn-discard-reset")
+
+        assert repository.get_stats()["sessions"] == []
+
+    run_scenario(scenario)
+
+
+def test_cancel_quit_restores_running_focus(tmp_path, fake_clock):
+    async def scenario():
+        repository = JSONRepository(str(tmp_path / "stats.json"))
+        engine = PomodoroEngine(focus_time=10, clock=fake_clock)
+        app = PomodoroTUI(engine, repository, now=fake_clock.now)
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.press("space")
+            fake_clock.advance(2)
+            await pilot.press("q")
+            await pilot.press("escape")
+            await pilot.pause()
+
+            assert engine.current_state == TimerState.FOCUS
+            assert engine.is_running is True
+            assert repository.get_stats()["sessions"] == []
+
+    run_scenario(scenario)
+
+
+def test_cancel_quit_keeps_paused_focus_paused(tmp_path, fake_clock):
+    async def scenario():
+        repository = JSONRepository(str(tmp_path / "stats.json"))
+        engine = PomodoroEngine(focus_time=10, clock=fake_clock)
+        app = PomodoroTUI(engine, repository, now=fake_clock.now)
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.press("space")
+            fake_clock.advance(2)
+            await pilot.press("space")
+            await pilot.press("q")
+            await pilot.press("escape")
+            await pilot.pause()
+
+            assert engine.current_state == TimerState.FOCUS
+            assert engine.is_running is False
+            assert repository.get_stats()["sessions"] == []
+
+    run_scenario(scenario)
+
+
+def test_repeated_ctrl_q_does_not_stack_exit_modals(tmp_path, fake_clock):
+    async def scenario():
+        repository = JSONRepository(str(tmp_path / "stats.json"))
+        engine = PomodoroEngine(focus_time=10, clock=fake_clock)
+        app = PomodoroTUI(engine, repository, now=fake_clock.now)
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.press("space")
+            fake_clock.advance(2)
+            await pilot.press("ctrl+q")
+            await pilot.press("ctrl+q")
+            await pilot.press("escape")
+            await pilot.pause()
+
+            assert not isinstance(app.screen, ExitConfirmationModal)
+            assert engine.current_state == TimerState.FOCUS
+            assert engine.is_running is True
+            assert repository.get_stats()["sessions"] == []
+
+    run_scenario(scenario)
+
+
+def test_task_manager_creates_and_activates_task(tmp_path, fake_clock):
+    async def scenario():
+        repository = JSONRepository(str(tmp_path / "stats.json"))
+        app = PomodoroTUI(
+            PomodoroEngine(clock=fake_clock),
+            repository,
+            now=fake_clock.now,
+        )
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.press("t")
+            assert isinstance(app.screen, TaskManagerModal)
+            app.screen.query_one("#task-title-input", Input).value = "Write x[/] docs"
+            await pilot.click("#task-create")
+            await pilot.pause()
+
+            active_task = repository.get_active_task()
+            assert active_task is not None
+            assert active_task["title"] == "Write x[/] docs"
+            assert str(app.query_one("#active-task-display", Static).render()) == (
+                "Active Task: Write x[/] docs"
+            )
+
+            await pilot.press("t")
+            assert isinstance(app.screen, TaskManagerModal)
+
+    run_scenario(scenario)
+
+
+def test_task_manager_can_select_unassociate_and_complete_task(
+    tmp_path, fake_clock
+):
+    async def scenario():
+        repository = JSONRepository(str(tmp_path / "stats.json"))
+        first_task = repository.create_task("First")
+        second_task = repository.create_task("Second")
+        repository.set_active_task(first_task["id"])
+        app = PomodoroTUI(
+            PomodoroEngine(clock=fake_clock),
+            repository,
+            now=fake_clock.now,
+        )
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.press("t")
+            app.screen.query_one("#task-select", Select).value = second_task["id"]
+            await pilot.click("#task-select-button")
+            await pilot.pause()
+            assert repository.get_active_task()["id"] == second_task["id"]
+
+            await pilot.press("t")
+            await pilot.click("#task-unassociate")
+            await pilot.pause()
+            assert repository.get_active_task() is None
+
+            await pilot.press("t")
+            app.screen.query_one("#task-select", Select).value = second_task["id"]
+            await pilot.click("#task-complete")
+            await pilot.pause()
+            assert repository.get_tasks(status="completed")[0]["id"] == second_task[
+                "id"
+            ]
+            assert repository.get_tasks(status="open") == [first_task]
+
+    run_scenario(scenario)
+
+
+def test_task_changes_are_locked_during_running_and_paused_focus(
+    tmp_path, fake_clock
+):
+    async def scenario():
+        repository = JSONRepository(str(tmp_path / "stats.json"))
+        task = repository.create_task("Protected")
+        app = PomodoroTUI(
+            PomodoroEngine(focus_time=10, clock=fake_clock),
+            repository,
+            now=fake_clock.now,
+        )
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.press("space")
+            await pilot.press("t")
+            assert app.screen.query_one("#task-title-input", Input).disabled is True
+            assert app.screen.query_one("#task-select", Select).disabled is True
+            await pilot.press("escape")
+
+            await pilot.press("space")
+            await pilot.press("t")
+            assert app.screen.query_one("#task-create", Button).disabled is True
+            assert app.screen.query_one("#task-complete", Button).disabled is True
+            await pilot.press("escape")
+
+            assert repository.get_tasks(status="open") == [task]
+            assert repository.get_active_task() is None
+
+    run_scenario(scenario)
+
+
+def test_completed_focus_keeps_task_selected_at_start(tmp_path, fake_clock):
+    async def scenario():
+        repository = JSONRepository(str(tmp_path / "stats.json"))
+        first_task = repository.create_task("Initial")
+        second_task = repository.create_task("Changed externally")
+        repository.set_active_task(first_task["id"])
+        engine = PomodoroEngine(focus_time=1, clock=fake_clock)
+        app = PomodoroTUI(engine, repository, now=fake_clock.now)
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.press("space")
+            repository.set_active_task(second_task["id"])
+            fake_clock.advance(1)
+            app._on_tick()
+
+            session = repository.get_stats()["sessions"][0]
+            assert session["task_id"] == first_task["id"]
+
+    run_scenario(scenario)
+
+
+def test_partial_focus_keeps_task_association(tmp_path, fake_clock):
+    async def scenario():
+        repository = JSONRepository(str(tmp_path / "stats.json"))
+        task = repository.create_task("Partial work")
+        repository.set_active_task(task["id"])
+        engine = PomodoroEngine(focus_time=10, clock=fake_clock)
+        app = PomodoroTUI(engine, repository, now=fake_clock.now)
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.press("space")
+            fake_clock.advance(2)
+            await pilot.press("r")
+            await pilot.click("#btn-save-reset")
+            await pilot.pause()
+
+            session = repository.get_stats()["sessions"][0]
+            assert session["status"] == "interrupted"
+            assert session["task_id"] == task["id"]
 
     run_scenario(scenario)

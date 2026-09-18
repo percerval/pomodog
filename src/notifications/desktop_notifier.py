@@ -3,6 +3,7 @@
 import shutil
 import subprocess
 import threading
+import time
 from pathlib import Path
 from typing import Literal, Protocol
 
@@ -25,6 +26,8 @@ class DesktopNotifier:
 
     def __init__(self, icon_path: str | Path | None = None):
         self.icon_path = Path(icon_path) if icon_path is not None else None
+        self._threads: set[threading.Thread] = set()
+        self._threads_lock = threading.RLock()
 
     def notify(self, event: DesktopEvent) -> bool:
         title, body = _MESSAGES[event]
@@ -44,18 +47,39 @@ class DesktopNotifier:
 
         def send_notification() -> None:
             try:
-                subprocess.run(
-                    command,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    timeout=5,
-                    check=False,
-                )
-            except (OSError, subprocess.TimeoutExpired):
-                pass
+                try:
+                    subprocess.run(
+                        command,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        timeout=5,
+                        check=False,
+                    )
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
+            finally:
+                with self._threads_lock:
+                    self._threads.discard(thread)
 
-        try:
-            threading.Thread(target=send_notification, daemon=True).start()
-        except RuntimeError:
-            return False
+        thread = threading.Thread(target=send_notification, daemon=True)
+        with self._threads_lock:
+            self._threads.add(thread)
+            try:
+                thread.start()
+            except RuntimeError:
+                self._threads.discard(thread)
+                return False
         return True
+
+    def wait(self, timeout: float) -> None:
+        deadline = time.monotonic() + max(0.0, timeout)
+        while True:
+            with self._threads_lock:
+                threads = tuple(self._threads)
+            if not threads:
+                return
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            threads[0].join(remaining)

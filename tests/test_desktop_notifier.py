@@ -1,4 +1,5 @@
 import subprocess
+import threading
 from types import SimpleNamespace
 
 import src.notifications.desktop_notifier as desktop_module
@@ -128,3 +129,30 @@ def test_notification_failure_inside_thread_is_silent(tmp_path, monkeypatch):
     monkeypatch.setattr(desktop_module.subprocess, "run", run)
 
     assert DesktopNotifier(icon).notify("focus-complete") is True
+
+
+def test_wait_allows_started_notification_to_finish(tmp_path, monkeypatch):
+    icon = tmp_path / "pomodog.png"
+    icon.write_bytes(b"PNG")
+    started = threading.Event()
+    release = threading.Event()
+    monkeypatch.setattr(
+        desktop_module.shutil,
+        "which",
+        lambda name: "/usr/bin/notify-send",
+    )
+
+    def run(command, **options):
+        started.set()
+        release.wait(timeout=1)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(desktop_module.subprocess, "run", run)
+    notifier = DesktopNotifier(icon)
+
+    assert notifier.notify("focus-complete") is True
+    assert started.wait(timeout=1)
+    release.set()
+    notifier.wait(timeout=1)
+
+    assert notifier._threads == set()
