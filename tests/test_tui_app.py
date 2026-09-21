@@ -2,6 +2,7 @@ import asyncio
 from datetime import timedelta
 
 import pytest
+from textual.content import Content
 from textual.widgets import Button, Input, Select, Static
 
 from src.core.pomodoro_engine import PomodoroEngine, TimerState
@@ -10,6 +11,7 @@ from src.ui.tui_app import (
     ExitConfirmationModal,
     FocusRecoveryModal,
     PomodoroTUI,
+    ProductivityModal,
     ResetConfirmationModal,
     TaskManagerModal,
 )
@@ -960,5 +962,76 @@ def test_recovery_can_discard_focus(tmp_path, fake_clock):
 
             assert repository.get_active_focus() is None
             assert repository.get_stats()["sessions"] == []
+
+    run_scenario(scenario)
+
+
+@pytest.mark.parametrize("screen_size", [(120, 40), (80, 24)])
+def test_productivity_modal_switches_between_today_and_all_time(
+    tmp_path, fake_clock, screen_size
+):
+    async def scenario():
+        repository = JSONRepository(str(tmp_path / "stats.json"))
+        task = repository.create_task("Relatório [literal]")
+        today_start = fake_clock.now()
+        repository.save_focus_session(
+            started_at=today_start,
+            ended_at=today_start + timedelta(minutes=1),
+            planned_seconds=300,
+            actual_seconds=60,
+            status="completed",
+            task_id=task["id"],
+        )
+        repository.save_focus_session(
+            started_at=today_start,
+            ended_at=today_start + timedelta(seconds=30),
+            planned_seconds=300,
+            actual_seconds=30,
+            status="interrupted",
+            task_id=None,
+        )
+        tomorrow = today_start + timedelta(days=1)
+        repository.save_focus_session(
+            started_at=tomorrow,
+            ended_at=tomorrow + timedelta(minutes=2),
+            planned_seconds=300,
+            actual_seconds=120,
+            status="completed",
+            task_id=task["id"],
+        )
+        repository.complete_task(task["id"])
+        app = PomodoroTUI(
+            PomodoroEngine(clock=fake_clock),
+            repository,
+            now=fake_clock.now,
+        )
+
+        async with app.run_test(size=screen_size) as pilot:
+            await pilot.press("p")
+            assert isinstance(app.screen, ProductivityModal)
+            assert app.screen.query_one("#productivity-dialog").region.y >= 0
+
+            today_report = str(
+                app.screen.query_one("#productivity-report", Static).render()
+            )
+            assert "Relatório [literal]" in today_report
+            assert "completed" in today_report
+            assert "00:01:00" in today_report
+            assert "Sem task" in today_report
+            assert all(
+                Content(line).cell_length <= 58
+                for line in today_report.splitlines()
+            )
+
+            await pilot.click("#productivity-all")
+            assert app.screen.period == "all"
+            all_report = str(
+                app.screen.query_one("#productivity-report", Static).render()
+            )
+            assert "00:03:00" in all_report
+
+            await pilot.press("escape")
+            await pilot.pause()
+            assert not isinstance(app.screen, ProductivityModal)
 
     run_scenario(scenario)

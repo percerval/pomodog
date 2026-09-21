@@ -12,12 +12,13 @@ O escopo atual é intencionalmente pequeno:
 - controles para iniciar, pausar, pular e resetar;
 - persistência local de sessões concluídas e focos parciais salvos em JSON;
 - associação opcional de sessões a tasks;
+- resumos de produtividade por task;
 - recuperação de foco após encerramento inesperado;
 - notificação sonora ao concluir foco ou pausa;
 - notificação desktop com ícone ao concluir foco ou pausa.
 
-O roadmap prevê gerar consultas e relatórios de foco em PDF e outros formatos.
-Essas funcionalidades ainda não estão implementadas.
+O roadmap prevê exportar relatórios de foco em Markdown, CSV, PDF e outros
+formatos. Essas funcionalidades ainda não estão implementadas.
 
 ## Requisitos
 
@@ -63,6 +64,7 @@ Atalhos disponíveis:
 | `r` | Resetar o timer |
 | `m` | Ativar ou silenciar o som |
 | `t` | Gerenciar tasks |
+| `p` | Exibir produtividade por task |
 | `q` ou `Ctrl+Q` | Sair com segurança |
 
 Uma fase pulada não é contabilizada como sessão concluída.
@@ -109,6 +111,16 @@ Somente focos são recuperados; breaks continuam transitórios. O período após
 que a aplicação ou o computador ficaram desligados. Registrar a sessão
 recuperada e remover o checkpoint ocorre na mesma escrita atômica, impedindo
 duplicação caso haja uma nova falha nesse momento.
+
+## Produtividade por task
+
+O atalho `p` abre um painel read-only com os períodos `Today` e `All Time`.
+Para cada task, ele exibe status, tempo total de foco e quantidades de sessões
+completas e interrompidas. Sessões sem associação aparecem como `Sem task`.
+
+As linhas são ordenadas pelo maior tempo dedicado. Tasks ainda sem sessões
+também aparecem, permitindo visualizar abertas e concluídas no mesmo resumo.
+O filtro diário usa a data local de término de cada sessão.
 
 ## Notificação sonora
 
@@ -255,6 +267,5 @@ pomodog/
 
 ## Roadmap
 
-1. Criar consultas e resumos de produtividade por task.
-2. Exportar relatórios para Markdown e CSV.
-3. Exportar relatórios para PDF e outros documentos.
+1. Exportar relatórios para Markdown e CSV.
+2. Exportar relatórios para PDF e outros documentos.

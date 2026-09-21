@@ -28,6 +28,7 @@ ResetDecision = Literal["save", "discard"]
 RecoveryDecision = Literal["resume", "save", "discard"]
 TaskAction = Literal["create", "select", "unassociate", "complete"]
 TaskDecision = tuple[TaskAction, str | None]
+ProductivityPeriod = Literal["today", "all"]
 
 
 def _current_time() -> datetime:
@@ -351,6 +352,128 @@ class TaskManagerModal(ModalScreen[TaskDecision]):
             self.dismiss(("complete", task_id))
 
 
+class ProductivityModal(ModalScreen[None]):
+    """Exibir um resumo read-only de produtividade por task."""
+
+    AUTO_FOCUS = "#productivity-close"
+    BINDINGS = [("escape", "close", "Close")]
+
+    CSS = """
+    ProductivityModal {
+        align: center middle;
+    }
+
+    #productivity-dialog {
+        width: 95%;
+        max-width: 100;
+        height: 90%;
+        max-height: 30;
+        min-height: 18;
+        border: heavy #00E5FF;
+        padding: 1 2;
+        background: #0D1117;
+    }
+
+    #productivity-title, #productivity-period {
+        text-align: center;
+        margin-bottom: 1;
+    }
+
+    #productivity-title {
+        text-style: bold;
+        color: #FFFFFF;
+    }
+
+    #productivity-report {
+        height: 1fr;
+        overflow-y: auto;
+        border: panel $primary;
+        padding: 1;
+    }
+
+    #productivity-actions {
+        height: 3;
+        align: center middle;
+        margin-top: 1;
+    }
+
+    #productivity-actions Button {
+        width: 20;
+        margin: 0 1;
+    }
+    """
+
+    def __init__(self, *, today_rows: list[dict], all_rows: list[dict]):
+        super().__init__()
+        self.today_rows = today_rows
+        self.all_rows = all_rows
+        self.period: ProductivityPeriod = "today"
+
+    def compose(self) -> ComposeResult:
+        with Container(id="productivity-dialog"):
+            yield Static("Productivity by Task", id="productivity-title")
+            yield Static("Period: Today", id="productivity-period")
+            yield Static(
+                self._render_report(self.today_rows),
+                id="productivity-report",
+                markup=False,
+            )
+            with Horizontal(id="productivity-actions"):
+                yield Button("Today", id="productivity-today")
+                yield Button("All Time", id="productivity-all")
+                yield Button("Close", id="productivity-close")
+
+    @staticmethod
+    def _format_duration(seconds: float) -> str:
+        rounded_seconds = max(0, round(seconds))
+        hours, remainder = divmod(rounded_seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+    @classmethod
+    def _render_report(cls, rows: list[dict]) -> str:
+        if not rows:
+            return "No tasks or focus sessions yet."
+
+        lines = [
+            f"{'Task':<26} {'Status':<9} {'Focus':>8} {'Done':>4} {'Partial':>7}",
+            "-" * 58,
+        ]
+        for row in rows:
+            normalized_title = " ".join(row["title"].split())
+            title = str(
+                Content(normalized_title).truncate(26, ellipsis=True, pad=True)
+            )
+            status = row["task_status"] or "—"
+            lines.append(
+                f"{title} {status:<9} "
+                f"{cls._format_duration(row['focus_seconds']):>8} "
+                f"{row['completed_sessions']:>4} "
+                f"{row['interrupted_sessions']:>7}"
+            )
+        return "\n".join(lines)
+
+    def action_close(self) -> None:
+        self.dismiss()
+
+    def _show_period(self, period: ProductivityPeriod) -> None:
+        self.period = period
+        rows = self.today_rows if period == "today" else self.all_rows
+        label = "Today" if period == "today" else "All Time"
+        self.query_one("#productivity-period", Static).update(f"Period: {label}")
+        self.query_one("#productivity-report", Static).update(
+            self._render_report(rows)
+        )
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "productivity-close":
+            self.dismiss()
+        elif event.button.id == "productivity-today":
+            self._show_period("today")
+        elif event.button.id == "productivity-all":
+            self._show_period("all")
+
+
 class PomodoroTUI(App):
     """
     Interface de Terminal (TUI) interativa para o Pomodoro Dog.
@@ -454,6 +577,7 @@ class PomodoroTUI(App):
         ("r", "reset_timer", "Reset"),
         ("m", "toggle_sound", "Mute Sound"),
         ("t", "manage_tasks", "Tasks"),
+        ("p", "show_productivity", "Productivity"),
         ("q", "request_quit", "Quit"),
     ]
 
@@ -966,6 +1090,15 @@ class PomodoroTUI(App):
         return (
             self.engine.current_state == TimerState.FOCUS
             and self._focus_started_at is not None
+        )
+
+    def action_show_productivity(self) -> None:
+        today = self._now().astimezone().date()
+        self.push_screen(
+            ProductivityModal(
+                today_rows=self.repo.get_task_productivity(day=today),
+                all_rows=self.repo.get_task_productivity(),
+            )
         )
 
     def action_toggle_sound(self) -> None:

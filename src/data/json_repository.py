@@ -316,3 +316,54 @@ class JSONRepository:
             "focus_seconds": stats["focus_seconds"],
             "focus_minutes": int(stats["focus_seconds"] // 60),
         }
+
+    def get_task_productivity(self, day: date | None = None) -> list[dict]:
+        """Agregar tempo e sessões por task, opcionalmente para uma data."""
+        data = self._read_json()
+        rows = {
+            task["id"]: {
+                "task_id": task["id"],
+                "title": task["title"],
+                "task_status": task["status"],
+                "focus_seconds": 0.0,
+                "completed_sessions": 0,
+                "interrupted_sessions": 0,
+            }
+            for task in data["tasks"]
+        }
+
+        for session in data["sessions"]:
+            ended_at = datetime.fromisoformat(session["ended_at"])
+            session_day = (
+                ended_at.astimezone().date()
+                if ended_at.tzinfo is not None
+                else ended_at.date()
+            )
+            if day is not None and session_day != day:
+                continue
+
+            task_id = session.get("task_id")
+            row_key = task_id or "__unassigned__"
+            if row_key not in rows:
+                rows[row_key] = {
+                    "task_id": task_id,
+                    "title": "Sem task" if task_id is None else "Unknown task",
+                    "task_status": None,
+                    "focus_seconds": 0.0,
+                    "completed_sessions": 0,
+                    "interrupted_sessions": 0,
+                }
+
+            row = rows[row_key]
+            row["focus_seconds"] = round(
+                row["focus_seconds"] + session["actual_seconds"], 6
+            )
+            if session["status"] == "completed":
+                row["completed_sessions"] += 1
+            else:
+                row["interrupted_sessions"] += 1
+
+        return sorted(
+            rows.values(),
+            key=lambda row: (-row["focus_seconds"], row["title"].casefold()),
+        )

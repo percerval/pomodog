@@ -364,3 +364,72 @@ def test_saving_session_can_atomically_resolve_active_focus(tmp_path):
     data = repository.get_stats()
     assert len(data["sessions"]) == 1
     assert data["active_focus"] is None
+
+
+def test_task_productivity_aggregates_and_orders_sessions(tmp_path):
+    repository = JSONRepository(str(tmp_path / "stats.json"))
+    primary = repository.create_task("Primary")
+    secondary = repository.create_task("Secondary")
+    idle = repository.create_task("Idle")
+    started_at = datetime(2026, 9, 5, 14, 0)
+
+    sessions = [
+        (primary["id"], 120, "completed"),
+        (primary["id"], 30, "interrupted"),
+        (secondary["id"], 60, "completed"),
+        (None, 20, "interrupted"),
+    ]
+    for task_id, seconds, status in sessions:
+        repository.save_focus_session(
+            started_at=started_at,
+            ended_at=started_at.replace(minute=5),
+            planned_seconds=300,
+            actual_seconds=seconds,
+            status=status,
+            task_id=task_id,
+        )
+
+    rows = repository.get_task_productivity()
+
+    assert [row["title"] for row in rows] == [
+        "Primary",
+        "Secondary",
+        "Sem task",
+        "Idle",
+    ]
+    assert rows[0] == {
+        "task_id": primary["id"],
+        "title": "Primary",
+        "task_status": "open",
+        "focus_seconds": 150.0,
+        "completed_sessions": 1,
+        "interrupted_sessions": 1,
+    }
+    assert rows[2]["task_id"] is None
+    assert rows[2]["interrupted_sessions"] == 1
+    assert rows[3]["task_id"] == idle["id"]
+    assert rows[3]["focus_seconds"] == 0
+
+
+def test_task_productivity_can_filter_by_end_date(tmp_path):
+    repository = JSONRepository(str(tmp_path / "stats.json"))
+    task = repository.create_task("Daily")
+
+    for ended_at, seconds in (
+        (datetime(2026, 9, 5, 23, 59), 60),
+        (datetime(2026, 9, 6, 0, 1), 120),
+    ):
+        repository.save_focus_session(
+            started_at=ended_at.replace(minute=0),
+            ended_at=ended_at,
+            planned_seconds=300,
+            actual_seconds=seconds,
+            status="completed",
+            task_id=task["id"],
+        )
+
+    rows = repository.get_task_productivity(day=date(2026, 9, 5))
+
+    assert len(rows) == 1
+    assert rows[0]["focus_seconds"] == 60.0
+    assert rows[0]["completed_sessions"] == 1
