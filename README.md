@@ -87,14 +87,21 @@ aguarda brevemente som e popup já iniciados, sem ficar bloqueada indefinidament
 ## Tasks opcionais
 
 O atalho `t` abre o gerenciador de tasks. Nele é possível criar, selecionar,
-desassociar e concluir tasks. A seleção ativa é persistida entre execuções e
-aparece na tela principal, mas não é obrigatória para iniciar um foco.
+desassociar, concluir e excluir tasks. A seleção ativa é persistida entre
+execuções e aparece na tela principal, mas não é obrigatória para iniciar um
+foco.
 
 Ao iniciar um foco, o Pomodog captura a task ativa naquele instante. A mesma
 associação é preservada em pause/resume e em sessões parciais salvas. Para
 evitar trocar a associação no meio de uma sessão, alterações ficam bloqueadas
 enquanto houver um foco iniciado, mesmo que esteja pausado. Durante pausas do
 ciclo e antes de iniciar o próximo foco, o gerenciamento volta a ser liberado.
+
+`Complete` preserva a task e suas associações históricas. `Delete` pede
+confirmação, informa quantas sessões serão afetadas e remove a task de forma
+irreversível. Sessões e eventual checkpoint associados passam atomicamente para
+`Sem task`; tempo e agregados não são alterados. Tasks abertas e concluídas
+podem ser excluídas.
 
 ## Recuperação de foco
 
@@ -231,9 +238,10 @@ erros cumulativos de ponto flutuante.
 
 Arquivos nos schemas legado e v2 são migrados automaticamente. Totais,
 histórico e sessões existentes são preservados; sessões antigas permanecem com
-`task_id: null`. Tasks concluídas não são removidas, mantendo válidas as
-referências históricas. Arquivos v3 anteriores à recuperação recebem
-`active_focus: null` automaticamente.
+`task_id: null`. Tasks concluídas não são removidas automaticamente. Quando uma
+task é excluída explicitamente, suas referências passam para `task_id: null`.
+Arquivos v3 anteriores à recuperação recebem `active_focus: null`
+automaticamente.
 
 As sessões são agrupadas pela data de término e as gravações usam substituição
 atômica do arquivo para reduzir o risco de corrupção por interrupções.

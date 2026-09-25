@@ -433,3 +433,48 @@ def test_task_productivity_can_filter_by_end_date(tmp_path):
     assert len(rows) == 1
     assert rows[0]["focus_seconds"] == 60.0
     assert rows[0]["completed_sessions"] == 1
+
+
+def test_delete_task_unassociates_history_and_active_focus_atomically(tmp_path):
+    repository = JSONRepository(str(tmp_path / "stats.json"))
+    task = repository.create_task("Delete me")
+    repository.set_active_task(task["id"])
+    started_at = datetime(2026, 9, 5, 14, 0)
+    ended_at = datetime(2026, 9, 5, 14, 5)
+    for status in ("completed", "interrupted"):
+        repository.save_focus_session(
+            started_at=started_at,
+            ended_at=ended_at,
+            planned_seconds=300,
+            actual_seconds=300,
+            status=status,
+            task_id=task["id"],
+        )
+    repository.save_active_focus(
+        started_at=started_at,
+        checkpointed_at=ended_at,
+        planned_seconds=1500,
+        elapsed_seconds=300,
+        task_id=task["id"],
+        is_running=False,
+    )
+    result = repository.delete_task(task["id"])
+
+    data = repository.get_stats()
+    assert result == {"task": task, "unassociated_sessions": 2}
+    assert data["tasks"] == []
+    assert data["active_task_id"] is None
+    assert data["active_focus"]["task_id"] is None
+    assert all(session["task_id"] is None for session in data["sessions"])
+    assert data["total_focus_seconds"] == 600
+    assert data["history"]["2026-09-05"]["completed_sessions"] == 1
+
+
+def test_delete_task_rejects_unknown_id_without_changing_data(tmp_path):
+    repository = JSONRepository(str(tmp_path / "stats.json"))
+    original_data = repository.get_stats()
+
+    with pytest.raises(ValueError, match="Unknown task"):
+        repository.delete_task("missing")
+
+    assert repository.get_stats() == original_data

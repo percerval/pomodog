@@ -250,6 +250,50 @@ class JSONRepository:
         self._write_json(data)
         return task
 
+    def get_task_session_count(self, task_id: str) -> int:
+        """Contar sessões históricas associadas a uma task existente."""
+        data = self._read_json()
+        if not any(task["id"] == task_id for task in data["tasks"]):
+            raise ValueError(f"Unknown task: {task_id}")
+        return sum(
+            1 for session in data["sessions"] if session.get("task_id") == task_id
+        )
+
+    def delete_task(self, task_id: str) -> dict:
+        """Excluir uma task e desassociar suas referências atomicamente."""
+        data = self._read_json()
+        task = next(
+            (task for task in data["tasks"] if task["id"] == task_id),
+            None,
+        )
+        if task is None:
+            raise ValueError(f"Unknown task: {task_id}")
+
+        unassociated_sessions = 0
+        for session in data["sessions"]:
+            if session.get("task_id") == task_id:
+                session["task_id"] = None
+                unassociated_sessions += 1
+
+        if data["active_task_id"] == task_id:
+            data["active_task_id"] = None
+        if (
+            data["active_focus"] is not None
+            and data["active_focus"].get("task_id") == task_id
+        ):
+            data["active_focus"]["task_id"] = None
+
+        data["tasks"] = [
+            existing_task
+            for existing_task in data["tasks"]
+            if existing_task["id"] != task_id
+        ]
+        self._write_json(data)
+        return {
+            "task": task,
+            "unassociated_sessions": unassociated_sessions,
+        }
+
     def save_active_focus(
         self,
         *,

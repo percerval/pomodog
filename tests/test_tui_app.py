@@ -8,6 +8,7 @@ from textual.widgets import Button, Input, Select, Static
 from src.core.pomodoro_engine import PomodoroEngine, TimerState
 from src.data.json_repository import JSONRepository
 from src.ui.tui_app import (
+    DeleteTaskConfirmationModal,
     ExitConfirmationModal,
     FocusRecoveryModal,
     PomodoroTUI,
@@ -771,10 +772,113 @@ def test_task_changes_are_locked_during_running_and_paused_focus(
             await pilot.press("t")
             assert app.screen.query_one("#task-create", Button).disabled is True
             assert app.screen.query_one("#task-complete", Button).disabled is True
+            assert app.screen.query_one("#task-delete", Button).disabled is True
             await pilot.press("escape")
 
             assert repository.get_tasks(status="open") == [task]
             assert repository.get_active_task() is None
+
+    run_scenario(scenario)
+
+
+def test_task_manager_deletes_completed_task_and_unassociates_history(
+    tmp_path, fake_clock
+):
+    async def scenario():
+        repository = JSONRepository(str(tmp_path / "stats.json"))
+        task = repository.create_task("Old task")
+        started_at = fake_clock.now()
+        repository.save_focus_session(
+            started_at=started_at,
+            ended_at=started_at + timedelta(minutes=1),
+            planned_seconds=300,
+            actual_seconds=60,
+            status="completed",
+            task_id=task["id"],
+        )
+        repository.complete_task(task["id"])
+        app = PomodoroTUI(
+            PomodoroEngine(clock=fake_clock),
+            repository,
+            now=fake_clock.now,
+        )
+
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.press("t")
+            manager_region = app.screen.query_one("#task-dialog").region
+            assert manager_region.y >= 0
+            assert manager_region.y + manager_region.height <= 24
+            app.screen.query_one("#task-select", Select).value = task["id"]
+            await pilot.click("#task-delete")
+
+            assert isinstance(app.screen, DeleteTaskConfirmationModal)
+            assert app.screen.session_count == 1
+            confirmation_region = app.screen.query_one("#task-delete-dialog").region
+            assert confirmation_region.y >= 0
+            assert confirmation_region.y + confirmation_region.height <= 24
+            await pilot.click("#task-delete-confirm")
+            await pilot.pause()
+
+            data = repository.get_stats()
+            assert data["tasks"] == []
+            assert data["sessions"][0]["task_id"] is None
+
+    run_scenario(scenario)
+
+
+def test_task_dialogs_stay_inside_small_terminal(tmp_path, fake_clock):
+    async def scenario():
+        repository = JSONRepository(str(tmp_path / "stats.json"))
+        task = repository.create_task("A very long task title " * 4)
+        app = PomodoroTUI(
+            PomodoroEngine(clock=fake_clock),
+            repository,
+            now=fake_clock.now,
+        )
+
+        async with app.run_test(size=(60, 20)) as pilot:
+            await pilot.press("t")
+            manager_region = app.screen.query_one("#task-dialog").region
+            assert manager_region.x >= 0
+            assert manager_region.y >= 0
+            assert manager_region.x + manager_region.width <= 60
+            assert manager_region.y + manager_region.height <= 20
+            await pilot.press("escape")
+
+            app.push_screen(
+                DeleteTaskConfirmationModal(
+                    task_title=task["title"],
+                    session_count=123,
+                )
+            )
+            await pilot.pause()
+            confirmation_region = app.screen.query_one("#task-delete-dialog").region
+            assert confirmation_region.x >= 0
+            assert confirmation_region.y >= 0
+            assert confirmation_region.x + confirmation_region.width <= 60
+            assert confirmation_region.y + confirmation_region.height <= 20
+
+    run_scenario(scenario)
+
+
+def test_task_deletion_can_be_cancelled(tmp_path, fake_clock):
+    async def scenario():
+        repository = JSONRepository(str(tmp_path / "stats.json"))
+        task = repository.create_task("Keep me")
+        app = PomodoroTUI(
+            PomodoroEngine(clock=fake_clock),
+            repository,
+            now=fake_clock.now,
+        )
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.press("t")
+            app.screen.query_one("#task-select", Select).value = task["id"]
+            await pilot.click("#task-delete")
+            await pilot.click("#task-delete-cancel")
+            await pilot.pause()
+
+            assert repository.get_tasks() == [task]
 
     run_scenario(scenario)
 

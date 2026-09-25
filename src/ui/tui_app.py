@@ -5,7 +5,7 @@ from typing import Literal
 
 from textual.app import App, ComposeResult
 from textual.content import Content
-from textual.containers import Container, Horizontal, Vertical
+from textual.containers import Container, Grid, Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Footer, Header, Input, Select, Static
 
@@ -26,7 +26,7 @@ _TITLE_3D = """
 
 ResetDecision = Literal["save", "discard"]
 RecoveryDecision = Literal["resume", "save", "discard"]
-TaskAction = Literal["create", "select", "unassociate", "complete"]
+TaskAction = Literal["create", "select", "unassociate", "complete", "delete"]
 TaskDecision = tuple[TaskAction, str | None]
 ProductivityPeriod = Literal["today", "all"]
 
@@ -213,16 +213,24 @@ class TaskManagerModal(ModalScreen[TaskDecision]):
     }
 
     #task-dialog {
-        width: 82;
-        height: 20;
+        width: 95%;
+        max-width: 82;
+        height: 95%;
+        max-height: 22;
+        min-height: 18;
         border: heavy #00E5FF;
         padding: 1 2;
         background: #0D1117;
+        overflow-y: auto;
     }
 
-    #task-title, #task-active, #task-lock-message {
+    #task-title {
         text-align: center;
         margin-bottom: 1;
+    }
+
+    #task-active, #task-lock-message {
+        text-align: center;
     }
 
     #task-title {
@@ -235,19 +243,14 @@ class TaskManagerModal(ModalScreen[TaskDecision]):
     }
 
     #task-actions {
-        height: 3;
-        align: center middle;
+        grid-size: 3 2;
+        grid-gutter: 0 1;
+        height: 6;
         margin-top: 1;
     }
 
     #task-actions Button {
-        width: 15;
-        margin: 0 1;
-    }
-
-    #task-close {
-        width: 18;
-        margin: 1 29 0 29;
+        width: 1fr;
     }
     """
 
@@ -268,7 +271,10 @@ class TaskManagerModal(ModalScreen[TaskDecision]):
         selected_task_id = (
             self.active_task["id"] if self.active_task is not None else Select.NULL
         )
-        options = [(Content(task["title"]), task["id"]) for task in self.tasks]
+        options = [
+            (Content(f"{task['title']} [{task['status']}]"), task["id"])
+            for task in self.tasks
+        ]
 
         with Container(id="task-dialog"):
             yield Static("Manage Tasks", id="task-title")
@@ -294,7 +300,7 @@ class TaskManagerModal(ModalScreen[TaskDecision]):
                 id="task-select",
                 disabled=self.changes_locked,
             )
-            with Horizontal(id="task-actions"):
+            with Grid(id="task-actions"):
                 yield Button(
                     "Create",
                     id="task-create",
@@ -315,7 +321,12 @@ class TaskManagerModal(ModalScreen[TaskDecision]):
                     id="task-complete",
                     disabled=self.changes_locked,
                 )
-            yield Button("Close", id="task-close")
+                yield Button(
+                    "Delete",
+                    id="task-delete",
+                    disabled=self.changes_locked,
+                )
+                yield Button("Close", id="task-close")
 
     def action_cancel(self) -> None:
         self.dismiss()
@@ -350,6 +361,79 @@ class TaskManagerModal(ModalScreen[TaskDecision]):
             self.dismiss(("select", task_id))
         elif event.button.id == "task-complete":
             self.dismiss(("complete", task_id))
+        elif event.button.id == "task-delete":
+            self.dismiss(("delete", task_id))
+
+
+class DeleteTaskConfirmationModal(ModalScreen[bool]):
+    """Confirmar exclusão irreversível de uma task."""
+
+    AUTO_FOCUS = "#task-delete-cancel"
+    BINDINGS = [("escape", "cancel", "Cancel")]
+
+    CSS = """
+    DeleteTaskConfirmationModal {
+        align: center middle;
+    }
+
+    #task-delete-dialog {
+        width: 95%;
+        max-width: 82;
+        height: auto;
+        min-height: 12;
+        max-height: 90%;
+        border: heavy #FF5252;
+        padding: 1 2;
+        background: #0D1117;
+        overflow-y: auto;
+    }
+
+    #task-delete-title, #task-delete-message {
+        text-align: center;
+        margin-bottom: 1;
+    }
+
+    #task-delete-title {
+        text-style: bold;
+        color: #FF5252;
+    }
+
+    #task-delete-actions {
+        height: 3;
+        align: center middle;
+    }
+
+    #task-delete-actions Button {
+        width: 1fr;
+        margin: 0 1;
+    }
+    """
+
+    def __init__(self, *, task_title: str, session_count: int):
+        super().__init__()
+        self.task_title = task_title
+        self.session_count = session_count
+
+    def compose(self) -> ComposeResult:
+        session_label = "session" if self.session_count == 1 else "sessions"
+        with Container(id="task-delete-dialog"):
+            yield Static("Delete task?", id="task-delete-title")
+            yield Static(
+                f'Delete "{self.task_title}"? '
+                f"{self.session_count} historical {session_label} will become "
+                "unassociated. This cannot be undone.",
+                id="task-delete-message",
+                markup=False,
+            )
+            with Horizontal(id="task-delete-actions"):
+                yield Button("Delete", id="task-delete-confirm")
+                yield Button("Cancel", id="task-delete-cancel")
+
+    def action_cancel(self) -> None:
+        self.dismiss(False)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.dismiss(event.button.id == "task-delete-confirm")
 
 
 class ProductivityModal(ModalScreen[None]):
@@ -1053,7 +1137,7 @@ class PomodoroTUI(App):
     def action_manage_tasks(self) -> None:
         self.push_screen(
             TaskManagerModal(
-                tasks=self.repo.get_tasks(status="open"),
+                tasks=self.repo.get_tasks(),
                 active_task=self.repo.get_active_task(),
                 changes_locked=self._task_changes_locked(),
             ),
@@ -1076,14 +1160,62 @@ class PomodoroTUI(App):
             self.repo.set_active_task(task["id"])
             self.notify(f"Task created: {task['title']}", markup=False)
         elif action == "select" and value is not None:
-            task = self.repo.set_active_task(value)
-            self.notify(f"Task selected: {task['title']}", markup=False)
+            try:
+                task = self.repo.set_active_task(value)
+            except ValueError:
+                self.notify("Completed task cannot be selected", severity="warning")
+            else:
+                self.notify(f"Task selected: {task['title']}", markup=False)
         elif action == "unassociate":
             self.repo.set_active_task(None)
             self.notify("Task unassociated")
         elif action == "complete" and value is not None:
             task = self.repo.complete_task(value)
             self.notify(f"Task completed: {task['title']}", markup=False)
+        elif action == "delete" and value is not None:
+            task = next(
+                (task for task in self.repo.get_tasks() if task["id"] == value),
+                None,
+            )
+            if task is None:
+                self.notify("Task no longer exists", severity="warning")
+                return
+            self.push_screen(
+                DeleteTaskConfirmationModal(
+                    task_title=task["title"],
+                    session_count=self.repo.get_task_session_count(value),
+                ),
+                lambda confirmed, task_id=value: self._handle_task_delete_confirmation(
+                    task_id, confirmed
+                ),
+            )
+            return
+        self._update_ui()
+
+    def _handle_task_delete_confirmation(
+        self, task_id: str, confirmed: bool
+    ) -> None:
+        if not confirmed:
+            return
+        if self._task_changes_locked():
+            self.notify(
+                "Task changes are locked while a focus is in progress",
+                severity="warning",
+            )
+            return
+
+        try:
+            result = self.repo.delete_task(task_id)
+        except ValueError:
+            self.notify("Task no longer exists", severity="warning")
+            return
+
+        task = result["task"]
+        count = result["unassociated_sessions"]
+        self.notify(
+            f"Task deleted: {task['title']} ({count} sessions unassociated)",
+            markup=False,
+        )
         self._update_ui()
 
     def _task_changes_locked(self) -> bool:
