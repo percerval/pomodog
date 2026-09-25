@@ -1,4 +1,4 @@
-"""Notificações desktop via Freedesktop Notifications (notify-send)."""
+"""Notificações desktop via notify-send, com fallback para KDE."""
 
 import shutil
 import subprocess
@@ -31,32 +31,25 @@ class DesktopNotifier:
 
     def notify(self, event: DesktopEvent) -> bool:
         title, body = _MESSAGES[event]
-        executable = shutil.which("notify-send")
-        if executable is None:
+        commands = self._commands(title, body)
+        if not commands:
             return False
-
-        command = [
-            executable,
-            "--app-name=Pomodog",
-            "--urgency=normal",
-            "--expire-time=5000",
-        ]
-        if self.icon_path is not None and self.icon_path.is_file():
-            command.append(f"--icon={self.icon_path}")
-        command.extend([title, body])
 
         def send_notification() -> None:
             try:
-                try:
-                    subprocess.run(
-                        command,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        timeout=5,
-                        check=False,
-                    )
-                except (OSError, subprocess.TimeoutExpired):
-                    pass
+                for command in commands:
+                    try:
+                        result = subprocess.run(
+                            command,
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                            timeout=10,
+                            check=False,
+                        )
+                    except (OSError, subprocess.TimeoutExpired):
+                        continue
+                    if result.returncode == 0:
+                        return
             finally:
                 with self._threads_lock:
                     self._threads.discard(thread)
@@ -70,6 +63,33 @@ class DesktopNotifier:
                 self._threads.discard(thread)
                 return False
         return True
+
+    def _commands(self, title: str, body: str) -> list[list[str]]:
+        commands = []
+        icon_exists = self.icon_path is not None and self.icon_path.is_file()
+
+        notify_send = shutil.which("notify-send")
+        if notify_send is not None:
+            command = [
+                notify_send,
+                "--app-name=Pomodog",
+                "--urgency=critical",
+                "--expire-time=8000",
+            ]
+            if icon_exists:
+                command.append(f"--icon={self.icon_path}")
+            command.extend([title, body])
+            commands.append(command)
+
+        kdialog = shutil.which("kdialog")
+        if kdialog is not None:
+            command = [kdialog, "--title", "Pomodog"]
+            if icon_exists:
+                command.extend(["--icon", str(self.icon_path)])
+            command.extend(["--passivepopup", f"{title}\n{body}", "8"])
+            commands.append(command)
+
+        return commands
 
     def wait(self, timeout: float) -> None:
         deadline = time.monotonic() + max(0.0, timeout)

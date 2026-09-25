@@ -800,6 +800,15 @@ class PomodoroTUI(App):
         ):
             self.bell()
 
+    def _stop_completion_sound(self) -> None:
+        if self._notifier is None:
+            return
+        try:
+            self._notifier.stop()
+        except Exception:
+            # Falhas ao interromper áudio externo não podem quebrar o timer.
+            pass
+
     def _ring_terminal_bell_from_thread(self) -> None:
         try:
             self.call_from_thread(self.bell)
@@ -947,6 +956,7 @@ class PomodoroTUI(App):
             phase_completed = self.engine.pause()
             self._handle_phase_completion(previous_state, phase_completed)
         else:
+            self._stop_completion_sound()
             self.engine.start()
             if self.engine.current_state == TimerState.FOCUS:
                 if self._focus_started_at is None:
@@ -1123,6 +1133,7 @@ class PomodoroTUI(App):
 
     def _finish_exit(self) -> None:
         self.repo.clear_active_focus()
+        self._stop_completion_sound()
         for notifier in (self._notifier, self._desktop_notifier):
             wait = getattr(notifier, "wait", None)
             if wait is None:
@@ -1235,6 +1246,8 @@ class PomodoroTUI(App):
 
     def action_toggle_sound(self) -> None:
         self._sound_enabled = not self._sound_enabled
+        if not self._sound_enabled:
+            self._stop_completion_sound()
         status = "enabled" if self._sound_enabled else "muted"
         self.notify(f"Sound {status}")
 

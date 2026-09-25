@@ -24,7 +24,8 @@ formatos. Essas funcionalidades ainda não estão implementadas.
 
 - Python 3.13;
 - [uv](https://docs.astral.sh/uv/);
-- `notify-send` (`libnotify`) para popups desktop — opcional; sem ele, apenas o som funciona.
+- `notify-send` (`libnotify`) ou `kdialog` para popups desktop — opcionais;
+- `pw-play`, `paplay` ou `aplay` para o alarme — opcionais.
 
 As versões exatas das dependências são registradas em `uv.lock`.
 
@@ -82,7 +83,8 @@ Ao pressionar `q` ou `Ctrl+Q`, a TUI sincroniza o timer antes de sair. Se o
 deadline já passou, a conclusão é registrada e notificada normalmente. Se
 existir um foco parcial, um modal oferece `Save Partial`, `Discard` e `Cancel`;
 cancelar restaura o estado iniciado ou pausado anterior. A saída confirmada
-aguarda brevemente som e popup já iniciados, sem ficar bloqueada indefinidamente.
+interrompe o alarme e aguarda brevemente o popup já iniciado, sem ficar bloqueada
+indefinidamente.
 
 ## Tasks opcionais
 
@@ -131,13 +133,15 @@ O filtro diário usa a data local de término de cada sessão.
 
 ## Notificação sonora
 
-O mesmo sino curto é reproduzido quando um foco ou uma pausa termina
-naturalmente. Skip, Reset, Save Partial, Discard e Cancel permanecem silenciosos.
+O mesmo alarme de cerca de oito segundos é reproduzido quando um foco ou uma pausa
+termina naturalmente. Ele para ao iniciar a próxima fase ou ativar o mute.
+Skip, Reset, Save Partial, Discard e Cancel permanecem silenciosos.
 
-O áudio fica em `assets/sounds/session-complete.wav`. A reprodução ocorre fora
-do event loop e tenta, nesta ordem, `pw-play`, `paplay` e `aplay`. Se nenhum
-backend conseguir reproduzir o arquivo, a aplicação usa o terminal bell do
-Textual. Não há dependência Python adicional para áudio.
+O áudio fica em `assets/sounds/session-alarm.wav`. A reprodução ocorre fora do
+event loop, mantém o processo do player sob controle para permitir interrupção
+imediata e tenta, nesta ordem, `pw-play`, `paplay` e `aplay`. Se nenhum backend
+conseguir reproduzir o arquivo, a aplicação usa o terminal bell do Textual. Não
+há dependência Python adicional para áudio.
 
 O atalho `m` alterna mute durante a execução. A preferência ainda não é
 persistida entre execuções.
@@ -148,10 +152,11 @@ Um popup do sistema é exibido quando um foco ou uma pausa termina
 naturalmente, com mensagens distintas para cada caso. Skip, Reset,
 Save Partial, Discard e Cancel permanecem silenciosos.
 
-O envio usa `notify-send` em thread dedicada, sem bloquear o event loop,
-com o ícone `assets/icons/pomodog.png`. O mute (`m`) vale apenas para o
-áudio — os popups continuam aparecendo. Se o `notify-send` estiver ausente
-ou o serviço de notificações falhar, o popup é ignorado silenciosamente.
+O envio tenta `notify-send` com urgência crítica em uma thread dedicada, sem
+bloquear o event loop, e usa o ícone `assets/icons/pomodog.png`. Se esse comando
+falhar, `kdialog --passivepopup` é usado como fallback quando disponível. O mute
+(`m`) vale apenas para o áudio — os popups continuam aparecendo. Falhas de ambos
+os backends são isoladas e não interrompem o timer.
 
 ## Testes
 
@@ -257,7 +262,7 @@ pomodog/
 |   |-- icons/
 |   |   `-- pomodog.png
 |   `-- sounds/
-|       `-- session-complete.wav
+|       `-- session-alarm.wav
 |-- data/
 |   `-- stats.json
 |-- src/

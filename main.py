@@ -13,7 +13,7 @@ def main():
         focus_time=25 * 60, short_break_time=5 * 60, long_break_time=15 * 60
     )
     repo = JSONRepository(str(project_root / "data" / "stats.json"))
-    notifier = SoundNotifier(project_root / "assets" / "sounds" / "session-complete.wav")
+    notifier = SoundNotifier(project_root / "assets" / "sounds" / "session-alarm.wav")
     desktop_notifier = DesktopNotifier(project_root / "assets" / "icons" / "pomodog.png")
 
     app = PomodoroTUI(

@@ -22,11 +22,15 @@ class FakeNotifier:
     def __init__(self, succeeds=True):
         self.succeeds = succeeds
         self.notifications = 0
+        self.stop_calls = 0
         self.wait_calls = []
 
     def notify(self, on_failure=None):
         self.notifications += 1
         return self.succeeds
+
+    def stop(self):
+        self.stop_calls += 1
 
     def wait(self, timeout):
         self.wait_calls.append(timeout)
@@ -113,6 +117,7 @@ def test_focus_and_break_completion_use_same_notifier(tmp_path, fake_clock):
             assert notifier.notifications == 1
 
             await pilot.press("space")
+            assert notifier.stop_calls == 2
             fake_clock.advance(1)
             app._on_tick()
             assert notifier.notifications == 2
@@ -161,6 +166,7 @@ def test_mute_suppresses_sound_until_enabled(tmp_path, fake_clock):
 
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.press("m")
+            assert notifier.stop_calls == 1
             await pilot.press("space")
             fake_clock.advance(1)
             app._on_tick()

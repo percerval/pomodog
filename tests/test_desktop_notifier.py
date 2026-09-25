@@ -20,11 +20,18 @@ class FailingThread(ImmediateThread):
         raise RuntimeError("thread unavailable")
 
 
-def configure_notify_send(monkeypatch, available=True):
+def configure_notify_send(monkeypatch, available=True, kdialog=False):
+    def which(name):
+        if name == "notify-send" and available:
+            return "/usr/bin/notify-send"
+        if name == "kdialog" and kdialog:
+            return "/usr/bin/kdialog"
+        return None
+
     monkeypatch.setattr(
         desktop_module.shutil,
         "which",
-        lambda name: "/usr/bin/notify-send" if available else None,
+        which,
     )
     monkeypatch.setattr(desktop_module.threading, "Thread", ImmediateThread)
 
@@ -47,8 +54,8 @@ def test_focus_notification_includes_icon_and_messages(tmp_path, monkeypatch):
             [
                 "/usr/bin/notify-send",
                 "--app-name=Pomodog",
-                "--urgency=normal",
-                "--expire-time=5000",
+                "--urgency=critical",
+                "--expire-time=8000",
                 f"--icon={icon}",
                 "Foco concluído",
                 "Hora de fazer uma pausa.",
@@ -56,7 +63,7 @@ def test_focus_notification_includes_icon_and_messages(tmp_path, monkeypatch):
             {
                 "stdout": subprocess.DEVNULL,
                 "stderr": subprocess.DEVNULL,
-                "timeout": 5,
+                "timeout": 10,
                 "check": False,
             },
         )
@@ -80,8 +87,8 @@ def test_break_notification_uses_break_messages(tmp_path, monkeypatch):
     assert commands[0][:4] == [
         "/usr/bin/notify-send",
         "--app-name=Pomodog",
-        "--urgency=normal",
-        "--expire-time=5000",
+        "--urgency=critical",
+        "--expire-time=8000",
     ]
 
 
@@ -107,11 +114,41 @@ def test_notification_returns_false_without_notify_send(tmp_path, monkeypatch):
     assert DesktopNotifier(icon).notify("focus-complete") is False
 
 
+def test_notification_falls_back_to_kdialog(tmp_path, monkeypatch):
+    icon = tmp_path / "pomodog.png"
+    icon.write_bytes(b"PNG")
+    commands = []
+    configure_notify_send(monkeypatch, kdialog=True)
+
+    def run(command, **options):
+        commands.append(command)
+        return SimpleNamespace(
+            returncode=1 if command[0].endswith("notify-send") else 0
+        )
+
+    monkeypatch.setattr(desktop_module.subprocess, "run", run)
+
+    assert DesktopNotifier(icon).notify("focus-complete") is True
+    assert commands[0][0] == "/usr/bin/notify-send"
+    assert commands[1] == [
+        "/usr/bin/kdialog",
+        "--title",
+        "Pomodog",
+        "--icon",
+        str(icon),
+        "--passivepopup",
+        "Foco concluído\nHora de fazer uma pausa.",
+        "8",
+    ]
+
+
 def test_notification_returns_false_when_thread_cannot_start(tmp_path, monkeypatch):
     icon = tmp_path / "pomodog.png"
     icon.write_bytes(b"PNG")
     monkeypatch.setattr(
-        desktop_module.shutil, "which", lambda name: "/usr/bin/notify-send"
+        desktop_module.shutil,
+        "which",
+        lambda name: "/usr/bin/notify-send" if name == "notify-send" else None,
     )
     monkeypatch.setattr(desktop_module.threading, "Thread", FailingThread)
 
@@ -139,7 +176,7 @@ def test_wait_allows_started_notification_to_finish(tmp_path, monkeypatch):
     monkeypatch.setattr(
         desktop_module.shutil,
         "which",
-        lambda name: "/usr/bin/notify-send",
+        lambda name: "/usr/bin/notify-send" if name == "notify-send" else None,
     )
 
     def run(command, **options):
